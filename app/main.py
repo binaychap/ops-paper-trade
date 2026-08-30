@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import logging
 import os
@@ -9,22 +10,38 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
+import sys
 
 from app.optionomics_client import fetch_trade_ideas
 
-from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from webull.core.client import ApiClient
+from webull.data.data_client import DataClient
 
-logger = logging.getLogger("uvicorn.error")
+logger = logging.getLogger("optionomics_bot")
 logger.setLevel(logging.INFO)
+logger.propagate = False
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
+
+
+def color_symbol(symbol: str | None) -> str:
+    value = str(symbol or "unknown").upper()
+    return f"\033[32m{value}\033[0m"
+
+
+def color_error(value: str | None) -> str:
+    text = str(value or "unknown").upper()
+    return f"\033[31m{text}\033[0m"
 
 
 class Settings(BaseSettings):
@@ -40,6 +57,10 @@ class Settings(BaseSettings):
     optionomics_api_url: str = Field(default="https://optionomics.ai/api/v1/trade_ideas", alias="OPTIONOMICS_API_URL")
     optionomics_poll_enabled: bool = Field(default=True, alias="OPTIONOMICS_POLL_ENABLED")
     optionomics_poll_interval_seconds: int = Field(default=600, ge=1, alias="OPTIONOMICS_POLL_INTERVAL_SECONDS")
+
+    webull_app_key: str | None = Field(default=None, alias="WEBULL_APP_KEY")
+    webull_app_secret: str | None = Field(default=None, alias="WEBULL_APP_SECRET")
+    webull_endpoint: str = Field(default="api.sandbox.webull.com", alias="WEBULL_ENDPOINT")
 
     alpaca_api_key: str | None = Field(default=None, alias="ALPACA_API_KEY")
     alpaca_secret_key: str | None = Field(default=None, alias="ALPACA_SECRET_KEY")
@@ -133,6 +154,271 @@ class OptionomicsTradeIdea(BaseModel):
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_expiration(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    if len(raw) == 8 and raw.isdigit():
+        try:
+            return datetime.strptime(raw, "%Y%m%d").strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    return raw
+
+
+def _flatten_option_chain(raw: Any) -> list[dict[str, Any]]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        items: list[dict[str, Any]] = []
+        for entry in raw:
+            if isinstance(entry, dict):
+                items.append(entry)
+            elif isinstance(entry, list):
+                items.extend(_flatten_option_chain(entry))
+        return items
+    if isinstance(raw, dict):
+        items: list[dict[str, Any]] = []
+        for key in ("data", "items", "contracts", "options", "result", "results"):
+            value = raw.get(key)
+            if value is not None:
+                items.extend(_flatten_option_chain(value))
+        if not items and all(key not in raw for key in ("data", "items", "contracts", "options", "result", "results")):
+            return [raw]
+        return items
+    return []
+
+
+def select_valid_webull_option_contract(
+    chain: Any,
+    *,
+    symbol: str,
+    option_type: str = "CALL",
+    expiration: str | None = None,
+    target_strike: float | None = None,
+) -> dict[str, Any] | None:
+    request_symbol = str(symbol or "").strip().upper()
+    request_type = str(option_type or "").upper()
+    request_expiration = _normalize_expiration(expiration)
+    target = _coerce_float(target_strike)
+    exact_candidates: list[tuple[float, float, dict[str, Any]]] = []
+    fallback_candidates: list[tuple[float, float, float, dict[str, Any]]] = []
+
+    requested_date = datetime.strptime(request_expiration, "%Y-%m-%d") if request_expiration else None
+
+    for item in _flatten_option_chain(chain):
+        if not isinstance(item, dict):
+            continue
+
+        underlying_symbol = str(
+            item.get("underlying_symbol")
+            or item.get("root_symbol")
+            or item.get("underlyingSymbol")
+            or item.get("rootSymbol")
+            or ""
+        ).upper()
+        candidate_symbol = str(item.get("symbol") or item.get("ticker") or item.get("option_symbol") or "").upper()
+        if request_symbol:
+            symbol_matches = (
+                (underlying_symbol and underlying_symbol == request_symbol)
+                or (candidate_symbol and candidate_symbol == request_symbol)
+                or (candidate_symbol and candidate_symbol.startswith(request_symbol))
+            )
+            if not symbol_matches:
+                continue
+
+        picked_type = str(
+            item.get("option_type")
+            or item.get("type")
+            or item.get("contract_type")
+            or item.get("optionType")
+            or ""
+        ).upper()
+        if picked_type in {"CALL_OPTION", "CALL"}:
+            picked_type = "CALL"
+        elif picked_type in {"PUT_OPTION", "PUT"}:
+            picked_type = "PUT"
+
+        if request_type and picked_type and picked_type != request_type:
+            continue
+
+        item_expiration = _normalize_expiration(
+            item.get("expiration_date")
+            or item.get("expiration")
+            or item.get("exp_date")
+            or item.get("expire_date")
+            or item.get("expiry")
+        )
+
+        strike_price = _coerce_float(
+            item.get("strike_price")
+            or item.get("strike")
+            or item.get("strikePrice")
+            or item.get("exercise_price")
+        )
+        if strike_price is None:
+            continue
+
+        strike_distance = abs(strike_price - target) if target is not None else 0.0
+        if request_expiration and item_expiration == request_expiration:
+            exact_candidates.append((strike_distance, 0.0, item))
+            continue
+
+        if requested_date is not None and item_expiration is not None:
+            try:
+                expiry_date = datetime.strptime(item_expiration, "%Y-%m-%d")
+            except ValueError:
+                expiry_date = None
+            if expiry_date is not None:
+                expiry_delta = abs((expiry_date - requested_date).days)
+                fallback_candidates.append((expiry_delta, strike_distance, float(expiry_delta), item))
+
+        elif target is not None:
+            fallback_candidates.append((strike_distance, 0.0, 0.0, item))
+
+    if exact_candidates:
+        exact_candidates.sort(key=lambda row: row[:2])
+        return exact_candidates[0][2]
+
+    if fallback_candidates:
+        fallback_candidates.sort(key=lambda row: row[:3])
+        return fallback_candidates[0][3]
+
+    return None
+
+
+def fetch_webull_option_chain(
+    symbol: str,
+    *,
+    option_type: str = "CALL",
+    expiration: str | None = None,
+    target_strike: float | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any] | None:
+    app_key = (settings.webull_app_key if settings else None) or os.getenv("WEBULL_APP_KEY")
+    app_secret = (settings.webull_app_secret if settings else None) or os.getenv("WEBULL_APP_SECRET")
+    if not app_key or not app_secret:
+        return None
+
+    endpoint = (settings.webull_endpoint if settings else None) or os.getenv("WEBULL_ENDPOINT") or "api.sandbox.webull.com"
+    api_client = ApiClient(app_key, app_secret, "us")
+    api_client.add_endpoint("us", endpoint)
+    api_client.set_stream_logger(stream=sys.stdout)
+
+    try:
+        response = DataClient(api_client).instrument.get_option_contracts(
+            category="US_OPTION",
+            underlying_symbols=str(symbol or "").strip().upper(),
+            option_type=option_type.upper(),
+            start_date=expiration,
+            end_date=expiration,
+            page_size=100,
+        )
+        if response is not None and hasattr(response, "status_code") and response.status_code != 200:
+            logger.warning("Webull option-chain lookup failed: %s %s", response.status_code, getattr(response, "text", ""))
+            response = None
+
+        payload = response.json() if response is not None and hasattr(response, "json") else response
+        selected = select_valid_webull_option_contract(
+            payload,
+            symbol=symbol,
+            option_type=option_type,
+            expiration=expiration,
+            target_strike=target_strike,
+        )
+        if selected is not None and isinstance(selected, dict):
+            return selected
+
+        if expiration is not None:
+            fallback_response = DataClient(api_client).instrument.get_option_contracts(
+                category="US_OPTION",
+                underlying_symbols=str(symbol or "").strip().upper(),
+                option_type=option_type.upper(),
+                page_size=100,
+            )
+            if fallback_response is not None and hasattr(fallback_response, "status_code") and fallback_response.status_code != 200:
+                logger.warning("Webull fallback option-chain lookup failed: %s %s", fallback_response.status_code, getattr(fallback_response, "text", ""))
+                return None
+            fallback_payload = fallback_response.json() if fallback_response is not None and hasattr(fallback_response, "json") else fallback_response
+            fallback_selected = select_valid_webull_option_contract(
+                fallback_payload,
+                symbol=symbol,
+                option_type=option_type,
+                expiration=expiration,
+                target_strike=target_strike,
+            )
+            if fallback_selected is not None and isinstance(fallback_selected, dict):
+                return fallback_selected
+        return None
+    except Exception:
+        logger.exception("Unable to query Webull option chain for %s", symbol)
+        return None
+
+
+
+def resolve_option_contract_symbol(
+    symbol: str,
+    *,
+    direction: Literal["bullish", "bearish", "neutral"] = "bullish",
+    price_reference: float | None = None,
+    expiration_days: int = 30,
+    expiration_date: str | None = None,
+) -> str:
+    ticker = str(symbol or "").strip().upper()
+    if not ticker:
+        raise ValueError("Option contract symbol cannot be empty")
+
+    reference = float(price_reference) if price_reference is not None else 100.0
+    option_type = "C" if direction in {"bullish", "neutral"} else "P"
+    strike = round(reference / 5.0) * 5.0
+    strike_code = f"{int(round(strike * 1000)):08d}"
+    expiration = (datetime.now(UTC) + timedelta(days=max(expiration_days, 1))).strftime("%y%m%d")
+    return f"{ticker}{expiration}{option_type}{strike_code}"
+
+
+def build_option_trade_request(
+    decision: TradingDecision,
+    *,
+    direction: Literal["bullish", "bearish", "neutral"] = "bullish",
+    notional_usd: float | None = None,
+    client_order_id: str | None = None,
+    payload: dict[str, Any] | None = None,
+):
+    from alpaca.trading.enums import OrderClass, OrderSide, OrderType, TimeInForce
+
+    payload = payload or {}
+    contract_symbol = resolve_option_contract_symbol(
+        decision.symbol,
+        direction=direction,
+        price_reference=float(payload.get("levels", {}).get("entry") or payload.get("entry_price") or max(decision.notional_usd, 1.0) / 10.0),
+    )
+
+    requested_notional = round(float(notional_usd if notional_usd is not None else decision.notional_usd), 2)
+    return SimpleNamespace(
+        symbol=contract_symbol,
+        notional=requested_notional,
+        side=OrderSide.BUY if decision.action == "buy" else OrderSide.SELL,
+        type=OrderType.MARKET,
+        time_in_force=TimeInForce.DAY,
+        client_order_id=client_order_id or f"option-{decision.symbol.lower()}-{int(time.time())}",
+        order_class=OrderClass.SIMPLE,
+    )
 
 
 class Ledger:
@@ -300,16 +586,16 @@ def poll_optionomics_trade_ideas() -> list[dict[str, Any]]:
             #logger.info("Optionomics raw idea payload: %s", idea)
             trade_id = idea.get("id")
             symbol = idea.get("symbol")
-            logger.info("Processing Optionomics idea: trade_id=%s symbol=%s", trade_id, symbol)
+            logger.info("Processing Optionomics idea: trade_id=%s symbol=%s", trade_id, color_symbol(symbol))
             if trade_id is None and symbol is None:
                 #logger.warning("Skipping invalid Optionomics payload with no id or symbol: %s", idea)
                 continue
 
             trade_id = str(trade_id if trade_id is not None else symbol or "unknown")
             if settings.force_reprocess:
-                logger.warning("FORCE_REPROCESS=true; bypassing dedupe for Optionomics trade %s (%s)", trade_id, symbol)
+                logger.warning("FORCE_REPROCESS=true; bypassing dedupe for Optionomics trade: trade_id=%s symbol=%s", trade_id, color_symbol(symbol))
             elif ledger.is_trade_idea_seen(trade_id):
-                logger.info("Skipping already-processed Optionomics trade %s (%s)", trade_id, symbol)
+                logger.info("Skipping already-processed Optionomics trade: trade_id=%s symbol=%s", trade_id, color_symbol(symbol))
                 continue
 
             ledger.save_trade_idea(trade_id, idea, status="queued")
@@ -324,12 +610,12 @@ def poll_optionomics_trade_ideas() -> list[dict[str, Any]]:
                 logger.warning(
                     "Skipping Optionomics trade %s because decision symbol %s does not match payload symbol %s",
                     trade_id,
-                    decision.symbol,
-                    str(idea.get("symbol") or "").upper(),
+                    color_error(decision.symbol),
+                    color_error(str(idea.get("symbol") or "").upper()),
                 )
                 continue
 
-            order_payload = submit_paper_order(decision, settings, fingerprint_for(TradeIdeaWebhook(
+            payload = TradeIdeaWebhook(
                 alert_name=str(idea.get("id") or idea.get("symbol") or "optionomics"),
                 source="trade_idea",
                 symbol=decision.symbol,
@@ -340,12 +626,15 @@ def poll_optionomics_trade_ideas() -> list[dict[str, Any]]:
                 stop_price=idea.get("levels", {}).get("stop"),
                 triggered_at=datetime.now(UTC),
                 matched_criteria={"pipeline_short_name": idea.get("pipeline_short_name"), "pipeline_name": idea.get("pipeline_name")},
-            )))
+            )
+            order_payload = submit_paper_order(decision, settings, fingerprint_for(payload), payload)
             status = "dry_run" if settings.dry_run else "ordered"
             ledger.mark_trade_idea_status(trade_id, status=status, decision=decision, order_payload=order_payload)
             logger.info("Optionomics %s decision: %s -> %s", decision.symbol, decision.strategy, order_payload)
-        except Exception:
-            logger.exception("Failed to process Optionomics idea: %s", idea)
+        except Exception as exc:
+            ledger.mark_trade_idea_status(trade_id, status="failed", decision=build_trade_decision_from_optionomics_payload(idea, settings) if "direction" in idea else None)
+            logger.exception("Failed to process Optionomics idea: %s", color_error(str(idea)))
+            logger.warning("Marked Optionomics trade %s as failed because broker submission raised: %s", trade_id, exc)
 
     return ideas
 
@@ -599,10 +888,68 @@ def apply_risk_gates(
     return decision.model_copy(update={"notional_usd": round(notional, 2)})
 
 
+def _load_webull_combo_module() -> Any:
+    module_path = Path(__file__).resolve().parent / "webull-buy-combo-option.py"
+    spec = importlib.util.spec_from_file_location("webull_combo_option", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load Webull combo module from {module_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_webull_option_chain_module() -> Any:
+    module_path = Path(__file__).resolve().parent / "webull-option-chain.py"
+    spec = importlib.util.spec_from_file_location("webull_option_chain", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load Webull option-chain module from {module_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def get_webull_valid_expiry(
+    symbol: str,
+    *,
+    option_type: str = "CALL",
+    requested_expiry: str | None = None,
+    settings: Settings | None = None,
+) -> str | None:
+    if not requested_expiry:
+        return None
+
+    module = _load_webull_option_chain_module()
+    app_key = (settings.webull_app_key if settings else None) or os.getenv("WEBULL_APP_KEY")
+    app_secret = (settings.webull_app_secret if settings else None) or os.getenv("WEBULL_APP_SECRET")
+    if not app_key or not app_secret:
+        return None
+
+    endpoint = (settings.webull_endpoint if settings else None) or os.getenv("WEBULL_ENDPOINT") or "api.sandbox.webull.com"
+    api_client = ApiClient(app_key, app_secret, "us")
+    api_client.add_endpoint("us", endpoint)
+    api_client.set_stream_logger(stream=sys.stdout)
+    data_client = module.DataClient(api_client)
+
+    try:
+        selected_expiry, _ = module.get_valid_webull_option_chain(
+            data_client,
+            symbol=symbol,
+            option_type=option_type,
+            requested_expiry=requested_expiry,
+        )
+        return selected_expiry
+    except Exception:
+        logger.exception("Unable to resolve Webull expiry from option chain for %s", symbol)
+        return None
+
+
 def submit_paper_order(
     decision: TradingDecision,
     settings: Settings,
     fingerprint: str,
+    payload: TradeIdeaWebhook | None = None,
 ) -> dict[str, Any]:
     client_order_id = f"om-{fingerprint[:24]}"
     logger.info("Processing paper order for %s", decision.symbol)
@@ -616,45 +963,81 @@ def submit_paper_order(
             "notional_usd": decision.notional_usd,
         }
 
-    if not settings.alpaca_api_key or not settings.alpaca_secret_key:
-        raise RuntimeError("Alpaca credentials are required when DRY_RUN=false")
+    webull_module = _load_webull_combo_module()
+    account_id = webull_module.get_account_id()
+    print("Using account:", account_id)
 
-    if not settings.alpaca_paper:
-        raise RuntimeError("This tutorial bot supports paper trading only; set ALPACA_PAPER=true")
-    logger.info("Submitting paper order for %s via Alpaca [client_order_id=%s]", decision.symbol, client_order_id)
-    trading_client = TradingClient(
-        settings.alpaca_api_key,
-        settings.alpaca_secret_key,
-        paper=settings.alpaca_paper,
+    reference_level = None
+    if payload is not None:
+        reference_level = payload.entry_price or payload.target_price or payload.stop_price
+    if reference_level is None:
+        reference_level = max(float(decision.notional_usd) / 100.0, 1.0)
+
+    expiry = (datetime.now(UTC) + timedelta(days=5)).strftime("%Y-%m-%d")
+    strike = round(float(reference_level) / 5.0) * 5.0
+    option_type = "CALL" if decision.action == "buy" else "PUT"
+    resolved_expiry = get_webull_valid_expiry(
+        decision.symbol,
+        option_type=option_type,
+        requested_expiry=expiry,
+        settings=settings,
+    ) or expiry
+    validated_contract = fetch_webull_option_chain(
+        decision.symbol,
+        option_type=option_type,
+        expiration=resolved_expiry,
+        target_strike=strike,
+        settings=settings,
     )
+    if not isinstance(validated_contract, dict):
+        raise ValueError(f"Unable to find a valid Webull {decision.symbol} {option_type} contract for {expiry}.")
 
-    side = OrderSide.BUY if decision.action == "buy" else OrderSide.SELL
-    order_data = MarketOrderRequest(
+    selected_strike = _coerce_float(
+        validated_contract.get("strike_price")
+        or validated_contract.get("strike")
+        or validated_contract.get("strikePrice")
+    )
+    selected_expiration = _normalize_expiration(
+        validated_contract.get("expiration_date")
+        or validated_contract.get("expiration")
+        or validated_contract.get("exp_date")
+        or validated_contract.get("expire_date")
+        or validated_contract.get("expiry")
+        or expiry,
+    )
+    if selected_strike is None:
+        selected_strike = strike
+    entry_limit = max(float(selected_strike) * 0.08, 1.0)
+    quantity = 1
+
+    order_result = webull_module.buy_call_with_bracket(
+        account_id=account_id,
         symbol=decision.symbol,
-        notional=round(decision.notional_usd, 2),
-        side=side,
-        time_in_force=TimeInForce.DAY,
-        client_order_id=client_order_id,
+        strike=selected_strike,
+        expiration=selected_expiration,
+        quantity=quantity,
+        entry_limit=entry_limit,
+        profit_percent=10,
+        stop_loss_percent=5,
     )
 
-    order = trading_client.submit_order(order_data=order_data)
     logger.info(
-        "Alpaca order submitted successfully: symbol=%s side=%s notional_usd=%s order_id=%s status=%s",
-        getattr(order, "symbol", decision.symbol),
-        getattr(order, "side", side),
+        "Webull combo order submitted successfully: symbol=%s side=%s notional_usd=%s order_id=%s",
+        decision.symbol,
+        "BUY" if decision.action == "buy" else "SELL",
         decision.notional_usd,
-        getattr(order, "id", ""),
-        getattr(order, "status", "unknown"),
+        str(order_result.get("order_id") or order_result.get("client_order_id") or ""),
     )
 
     return {
         "dry_run": False,
-        "id": str(getattr(order, "id", "")),
-        "client_order_id": getattr(order, "client_order_id", client_order_id),
-        "symbol": getattr(order, "symbol", decision.symbol),
-        "status": str(getattr(order, "status", "unknown")),
-        "side": str(getattr(order, "side", side)),
+        "id": str(order_result.get("order_id") or order_result.get("client_order_id") or ""),
+        "client_order_id": client_order_id,
+        "symbol": decision.symbol,
+        "status": "submitted",
+        "side": "BUY" if decision.action == "buy" else "SELL",
         "notional_usd": decision.notional_usd,
+        "broker": "webull",
     }
 
 
@@ -671,7 +1054,7 @@ def process_trade_idea(payload: TradeIdeaWebhook, fingerprint: str) -> None:
             logger.info("Skipped %s: %s", payload.symbol, gated_decision.rationale)
             return
 
-        order_payload = submit_paper_order(gated_decision, settings, fingerprint)
+        order_payload = submit_paper_order(gated_decision, settings, fingerprint, payload)
         final_status = "dry_run" if settings.dry_run else "ordered"
         ledger.finish(fingerprint, final_status, gated_decision, order_payload)
         logger.info("Processed %s with status %s", payload.symbol, final_status)

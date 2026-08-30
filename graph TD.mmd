@@ -1,0 +1,39 @@
+graph TD
+    A["App startup"] --> B{"OPTIONOMICS_API_KEY and EMAIL present?"}
+    B -- "No" --> C["Polling disabled"]
+    B -- "Yes" --> D["Start background polling thread"]
+    D --> E["Every interval: poll_optionomics_trade_ideas"]
+
+    E --> F["fetch_trade_ideas from Optionomics"]
+    F --> G{"Payload valid and trade_id/symbol present?"}
+    G -- "No" --> H["Skip malformed payload"]
+    G -- "Yes" --> I["Ledger dedupe check"]
+    I --> J{"Already processed?"}
+    J -- "Yes" --> K["Skip duplicate trade"]
+    J -- "No" --> L["Save raw idea to SQLite"]
+
+    L --> M["build_trade_decision_from_optionomics_payload"]
+    M --> N{"Decision valid?"}
+    N -- "No" --> O["Mark skipped"]
+    N -- "Yes" --> P["validate_optionomics_symbol_match"]
+    P --> Q{"Symbol matches payload?"}
+    Q -- "No" --> O
+    Q -- "Yes" --> R["apply_risk_gates"]
+
+    R --> S{"Action allowed?"}
+    S -- "No" --> O
+    S -- "Yes" --> T["submit_paper_order"]
+    T --> U{"DRY_RUN=true?"}
+    U -- "Yes" --> V["Return dry-run payload"]
+    U -- "No" --> W["Resolve valid Webull contract and submit paper order"]
+
+    V --> X["Ledger mark status: dry_run"]
+    W --> Y["Ledger mark status: ordered"]
+    O --> Z["Ledger mark status: skipped"]
+    H --> AA["Continue polling"]
+    K --> AA
+    X --> AA
+    Y --> AA
+    Z --> AA
+
+    AA --> D

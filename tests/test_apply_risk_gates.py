@@ -8,6 +8,7 @@ from app.main import (
     TradingDecision,
     apply_risk_gates,
     build_trade_decision,
+    select_valid_webull_option_contract,
     validate_optionomics_symbol_match,
 )
 
@@ -218,6 +219,114 @@ def test_optionomics_bearish_direction_checks_its_range():
     assert decision.notional_usd == 250.0
 
 
+def test_select_valid_webull_option_contract_falls_back_to_nearest_expiration():
+    chain = [
+        {"symbol": "AAPL", "option_type": "CALL", "expiration_date": "2026-09-18", "strike_price": 200.0},
+        {"symbol": "AAPL", "option_type": "CALL", "expiration_date": "2026-09-18", "strike_price": 205.0},
+        {"symbol": "AAPL", "option_type": "CALL", "expiration_date": "2026-09-25", "strike_price": 210.0},
+    ]
+
+    selected = select_valid_webull_option_contract(
+        chain,
+        symbol="AAPL",
+        option_type="CALL",
+        expiration="2026-09-12",
+        target_strike=203.0,
+    )
+
+    assert selected is not None
+    assert selected["expiration_date"] == "2026-09-18"
+    assert selected["strike_price"] == 205.0
+
+
+def test_select_valid_webull_option_contract_uses_underlying_symbol_from_real_payload():
+    chain = [
+        {
+            "symbol": "MRNA261218C00140000",
+            "underlying_symbol": "MRNA",
+            "option_type": "CALL",
+            "expiration_date": "2026-09-18",
+            "strike_price": 140.0,
+        },
+        {
+            "symbol": "MRNA261218C00145000",
+            "underlying_symbol": "MRNA",
+            "option_type": "CALL",
+            "expiration_date": "2026-09-18",
+            "strike_price": 145.0,
+        },
+    ]
+
+    selected = select_valid_webull_option_contract(
+        chain,
+        symbol="MRNA",
+        option_type="CALL",
+        expiration="2026-09-03",
+        target_strike=140.5,
+    )
+
+    assert selected is not None
+    assert selected["underlying_symbol"] == "MRNA"
+    assert selected["strike_price"] == 140.0
+
+
+def test_select_nearest_valid_webull_contract_uses_option_chain():
+    from app.main import select_valid_webull_option_contract
+
+    chain = {
+        "data": [
+            {"symbol": "CAI", "option_type": "CALL", "expiration_date": "2026-09-02", "strike_price": "25.00"},
+            {"symbol": "CAI", "option_type": "CALL", "expiration_date": "2026-09-02", "strike_price": "30.00"},
+            {"symbol": "CAI", "option_type": "PUT", "expiration_date": "2026-09-02", "strike_price": "25.00"},
+        ]
+    }
+
+    selected = select_valid_webull_option_contract(
+        chain,
+        symbol="CAI",
+        option_type="CALL",
+        expiration="2026-09-02",
+        target_strike=27.0,
+    )
+
+    assert selected is not None
+    assert selected["strike_price"] == "25.00"
+
+    list_selected = select_valid_webull_option_contract(
+        chain["data"],
+        symbol="CAI",
+        option_type="CALL",
+        expiration="2026-09-02",
+        target_strike=27.0,
+    )
+    assert list_selected is not None
+    assert list_selected["strike_price"] == "25.00"
+
+
+def test_select_nearest_valid_webull_contract_falls_back_to_next_expiration():
+    from app.main import select_valid_webull_option_contract
+
+    chain = {
+        "data": [
+            {"symbol": "CRM", "option_type": "CALL", "expiration_date": "2026-09-18", "strike_price": "245.00"},
+            {"symbol": "CRM", "option_type": "CALL", "expiration_date": "2026-09-18", "strike_price": "250.00"},
+            {"symbol": "CRM", "option_type": "CALL", "expiration_date": "2026-09-18", "strike_price": "255.00"},
+        ]
+    }
+
+    selected = select_valid_webull_option_contract(
+        chain,
+        symbol="CRM",
+        option_type="CALL",
+        expiration="2026-09-02",
+        target_strike=249.0,
+    )
+
+    assert selected is not None
+    assert selected["expiration_date"] == "2026-09-18"
+    assert selected["strike_price"] == "250.00"
+
+
 def test_optionomics_placeholder_pipeline_is_not_executed():
     payload = {
         "id": "idea-2",
@@ -240,10 +349,10 @@ def test_optionomics_placeholder_pipeline_is_not_executed():
     assert "placeholder" in decision.rationale.lower()
 
 
-def test_trade_idea_duplicate_is_skipped_by_ledger():
+def test_trade_idea_duplicate_is_skipped_by_ledger(tmp_path):
     from app.main import Ledger
 
-    ledger = Ledger("test_duplicate_ledger.sqlite3")
+    ledger = Ledger(str(tmp_path / "ledger.sqlite3"))
     idea = {
         "id": "idea-dup-1",
         "symbol": "NVDA",
@@ -257,6 +366,30 @@ def test_trade_idea_duplicate_is_skipped_by_ledger():
     assert ledger.is_trade_idea_seen("idea-dup-1") is False
     ledger.save_trade_idea("idea-dup-1", idea, status="queued")
     assert ledger.is_trade_idea_seen("idea-dup-1") is True
+
+
+def test_build_option_order_request_prefers_contract_symbol(monkeypatch):
+    from app.main import build_option_trade_request
+    from alpaca.trading.enums import OrderSide, OrderType
+
+    monkeypatch.setattr("app.main.resolve_option_contract_symbol", lambda *args, **kwargs: "MSFT240919C00450000")
+
+    decision = TradingDecision(
+        action="buy",
+        symbol="MSFT",
+        strategy="iron_condor",
+        notional_usd=250.0,
+        confidence=0.9,
+        rationale="test",
+        risk_notes=[],
+    )
+
+    request = build_option_trade_request(decision, direction="bullish", notional_usd=250.0)
+
+    assert request.symbol == "MSFT240919C00450000"
+    assert request.side == OrderSide.BUY
+    assert request.type == OrderType.MARKET
+    assert request.notional == 250.0
 
     import os
     if os.path.exists("test_duplicate_ledger.sqlite3"):

@@ -9,6 +9,7 @@ dependencies = [
     "fastapi[standard]>=0.139.2",
     "pydantic-settings>=2.14.2",
     "python-dotenv>=1.2.2",
+    "webull-openapi-python-sdk>=2.0.18",
 ]
 
 [dependency-groups]

@@ -1,0 +1,47 @@
+@startuml
+participant App
+participant Poller as "Polling Thread"
+participant Optionomics as "Optionomics API"
+participant Ledger as "Ledger (SQLite)"
+participant Builder as "Decision Builder"
+participant Risk as "Risk Gates"
+participant Broker as "Webull (Broker)"
+participant Scheduler
+
+App -> Poller: start polling (if API key + email present)
+loop every interval
+    Poller -> Optionomics: fetch_trade_ideas()
+    Optionomics --> Poller: trade ideas list
+
+    loop for each idea
+        Poller -> Ledger: dedupe_check(trade_id)
+        alt already processed
+            Ledger --> Poller: exists
+            Poller -> Ledger: mark status = skipped
+        else new idea
+            Ledger --> Poller: not found
+            Poller -> Ledger: save raw idea (queued)
+            Poller -> Builder: build_trade_decision(payload)
+            Builder --> Poller: TradingDecision
+
+            Poller -> Builder: validate_symbol_match()
+            alt symbol mismatch
+                Builder --> Poller: false
+                Poller -> Ledger: mark status = skipped
+            else symbol matches
+                Builder --> Poller: true
+                Poller -> Risk: apply_risk_gates(Decision)
+                Risk --> Poller: allowed?
+                alt not allowed
+                    Poller -> Ledger: mark status = skipped
+                else allowed
+                    Poller -> Broker: submit_paper_order() / dry-run
+                    Broker --> Poller: order_result
+                    Poller -> Ledger: mark status = dry_run/ordered/failed
+                end
+            end
+        end
+    end
+    Poller -> Scheduler: sleep(interval)
+end
+@enduml
