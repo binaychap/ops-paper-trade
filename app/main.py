@@ -15,6 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal
+from enum import Enum
 import sys
 
 from app.optionomics_client import fetch_trade_ideas
@@ -46,8 +47,6 @@ def color_error(value: str | None) -> str:
 
 class Settings(BaseSettings):
     """Runtime settings loaded from environment variables."""
-
-    webhook_secret: str | None = Field(default=None, alias="WEBHOOK_SECRET")
     dry_run: bool = Field(default=True, alias="DRY_RUN")
     max_notional_usd: float = Field(default=250.0, gt=0.0, alias="MAX_NOTIONAL_USD")
     allow_short_selling: bool = Field(default=False, alias="ALLOW_SHORT_SELLING")
@@ -62,17 +61,30 @@ class Settings(BaseSettings):
     webull_app_secret: str | None = Field(default=None, alias="WEBULL_APP_SECRET")
     webull_endpoint: str = Field(default="api.sandbox.webull.com", alias="WEBULL_ENDPOINT")
 
-    alpaca_api_key: str | None = Field(default=None, alias="ALPACA_API_KEY")
-    alpaca_secret_key: str | None = Field(default=None, alias="ALPACA_SECRET_KEY")
-    alpaca_paper: bool = Field(default=True, alias="ALPACA_PAPER")
-
     database_path: str = Field(default="bot.sqlite3", alias="DATABASE_PATH")
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 
-class TradeIdeaWebhook(BaseModel):
-    """Validated Optionomics Trade Idea webhook payload."""
+class OrderSide(Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class OrderType(Enum):
+    MARKET = "MARKET"
+
+
+class TimeInForce(Enum):
+    DAY = "DAY"
+
+
+class OrderClass(Enum):
+    SIMPLE = "SIMPLE"
+
+
+class TradeIdea(BaseModel):
+    """Validated Optionomics Trade Idea payload."""
 
     alert_name: str
     source: Literal["trade_idea"]
@@ -400,8 +412,7 @@ def build_option_trade_request(
     client_order_id: str | None = None,
     payload: dict[str, Any] | None = None,
 ):
-    from alpaca.trading.enums import OrderClass, OrderSide, OrderType, TimeInForce
-
+    # local enums OrderClass, OrderSide, OrderType, TimeInForce defined in this module
     payload = payload or {}
     contract_symbol = resolve_option_contract_symbol(
         decision.symbol,
@@ -422,7 +433,7 @@ def build_option_trade_request(
 
 
 class Ledger:
-    """Small SQLite ledger for received webhooks, decisions, and orders."""
+    """Small SQLite ledger for received events, decisions, and orders."""
 
     def __init__(self, database_path: str) -> None:
         self.path = Path(database_path)
@@ -433,7 +444,7 @@ class Ledger:
         with closing(sqlite3.connect(self.path, timeout=10)) as conn:
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS webhook_events (
+                CREATE TABLE IF NOT EXISTS events (
                     fingerprint TEXT PRIMARY KEY,
                     status TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
@@ -513,14 +524,14 @@ class Ledger:
             )
             conn.commit()
 
-    def reserve(self, fingerprint: str, payload: TradeIdeaWebhook) -> bool:
+    def reserve(self, fingerprint: str, payload: TradeIdea) -> bool:
         now = utc_now_iso()
         payload_json = json.dumps(payload.model_dump(mode="json"), sort_keys=True)
 
         with closing(sqlite3.connect(self.path, timeout=10)) as conn:
             cursor = conn.execute(
                 """
-                INSERT OR IGNORE INTO webhook_events
+                INSERT OR IGNORE INTO events
                     (fingerprint, status, payload_json, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
@@ -544,9 +555,9 @@ class Ledger:
         with closing(sqlite3.connect(self.path, timeout=10)) as conn:
             conn.execute(
                 """
-                UPDATE webhook_events
-                   SET status = ?, decision_json = ?, order_json = ?, error = NULL, updated_at = ?
-                 WHERE fingerprint = ?
+                                UPDATE events
+                                     SET status = ?, decision_json = ?, order_json = ?, error = NULL, updated_at = ?
+                                 WHERE fingerprint = ?
                 """,
                 (status, decision_json, order_json, now, fingerprint),
             )
@@ -558,9 +569,9 @@ class Ledger:
         with closing(sqlite3.connect(self.path, timeout=10)) as conn:
             conn.execute(
                 """
-                UPDATE webhook_events
-                   SET status = ?, error = ?, updated_at = ?
-                 WHERE fingerprint = ?
+                                UPDATE events
+                                     SET status = ?, error = ?, updated_at = ?
+                                 WHERE fingerprint = ?
                 """,
                 ("failed", error[:1000], now, fingerprint),
             )
@@ -615,7 +626,7 @@ def poll_optionomics_trade_ideas() -> list[dict[str, Any]]:
                 )
                 continue
 
-            payload = TradeIdeaWebhook(
+            payload = TradeIdea(
                 alert_name=str(idea.get("id") or idea.get("symbol") or "optionomics"),
                 source="trade_idea",
                 symbol=decision.symbol,
@@ -668,7 +679,7 @@ def get_settings() -> Settings:
     return Settings()
 
 
-def fingerprint_for(payload: TradeIdeaWebhook) -> str:
+def fingerprint_for(payload: TradeIdea) -> str:
     material = "|".join(
         [
             payload.alert_name,
@@ -690,7 +701,7 @@ def validate_optionomics_symbol_match(payload: dict[str, Any], decision: Trading
     return payload_symbol == decision_symbol
 
 
-def build_trade_decision(payload: TradeIdeaWebhook, settings: Settings) -> TradingDecision:
+def build_trade_decision(payload: TradeIdea, settings: Settings) -> TradingDecision:
     action = "skip"
     rationale = "No trade action determined."
     risk_notes: list[str] = []
@@ -850,12 +861,12 @@ def skip_decision(decision: TradingDecision, reason: str) -> TradingDecision:
 
 
 def apply_risk_gates(
-    payload: TradeIdeaWebhook,
+    payload: TradeIdea,
     decision: TradingDecision,
     settings: Settings,
 ) -> TradingDecision:
     if decision.symbol != payload.symbol:
-        return skip_decision(decision, "Decision symbol does not match webhook symbol")
+        return skip_decision(decision, "Decision symbol does not match payload symbol")
 
     if decision.action == "skip":
         return decision.model_copy(update={"notional_usd": 0.0})
@@ -949,7 +960,7 @@ def submit_paper_order(
     decision: TradingDecision,
     settings: Settings,
     fingerprint: str,
-    payload: TradeIdeaWebhook | None = None,
+    payload: TradeIdea | None = None,
 ) -> dict[str, Any]:
     client_order_id = f"om-{fingerprint[:24]}"
     logger.info("Processing paper order for %s", decision.symbol)
@@ -1041,7 +1052,7 @@ def submit_paper_order(
     }
 
 
-def process_trade_idea(payload: TradeIdeaWebhook, fingerprint: str) -> None:
+def process_trade_idea(payload: TradeIdea, fingerprint: str) -> None:
     settings = get_settings()
     ledger = Ledger(settings.database_path)
 
@@ -1060,7 +1071,7 @@ def process_trade_idea(payload: TradeIdeaWebhook, fingerprint: str) -> None:
         logger.info("Processed %s with status %s", payload.symbol, final_status)
     except Exception as exc:
         ledger.fail(fingerprint, str(exc))
-        logger.exception("Failed to process webhook %s", fingerprint)
+        logger.exception("Failed to process event %s", fingerprint)
         raise
 
 
@@ -1070,5 +1081,4 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "dry_run": settings.dry_run,
-        "alpaca_paper": settings.alpaca_paper,
     }

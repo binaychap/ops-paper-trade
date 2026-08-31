@@ -1,6 +1,6 @@
 # Ops Paper Trade
 
-This project is a paper-trading automation loop that consumes Optionomics trade ideas, validates them against a deterministic risk model, and then prepares or submits a paper order through Webull. It is designed to run as a polling service rather than a webhook listener.
+This project is a paper-trading automation loop that consumes Optionomics trade ideas, validates them against a deterministic risk model, and then prepares or submits a paper order through Webull. It is designed to run as a polling service rather than an external listener.
 
 The core entry point is [app/main.py](app/main.py). It manages configuration, fetches trade ideas, performs decision logic, stores state in SQLite, and starts the polling background worker.
 
@@ -39,8 +39,6 @@ The app is intentionally simple and layered around a few core pieces:
 Create a `.env` file in the project root:
 
 ```env
-WEBHOOK_SECRET=replace-with-a-long-random-secret
-
 DRY_RUN=true
 MAX_NOTIONAL_USD=250
 ALLOW_SHORT_SELLING=false
@@ -86,7 +84,7 @@ The runtime flow in [app/main.py](app/main.py) is split into a few clear stages.
 
 `Settings` is a `BaseSettings` model that reads environment variables from `.env` and from the process environment. It includes:
 
-- broker and webhook settings
+- broker and polling settings
 - Optionomics credentials and polling controls
 - Webull credentials and endpoint
 - database path
@@ -98,7 +96,7 @@ This lets the app keep runtime settings centralized instead of hardcoding values
 
 The file defines strict models:
 
-- `TradeIdeaWebhook`: a normalized incoming trade idea from the external feed
+- `TradeIdea`: a normalized incoming trade idea from the external feed
 - `TradingDecision`: the internal action the bot decides to take
 - `OptionomicsTradeIdea`: normalized Optionomics payload used for signal processing
 
@@ -134,7 +132,7 @@ while True:
     time.sleep(interval_seconds)
 ```
 
-This means the app does not wait for an external webhook; it actively pulls trade ideas on a timer.
+This means the app does not wait for an external listener; it actively pulls trade ideas on a timer.
 
 ### 5. Polling process: from API to decision
 
@@ -194,7 +192,7 @@ This is where the app turns a validated idea into a real paper-trading action.
 
 The `Ledger` class manages SQLite tables:
 
-- `webhook_events`: stores processed webhook-style events
+- `events`: stores processed feed events and their decision/order state
 - `optionomics_trade_ideas`: stores each Trade Idea and its final status
 
 It deduplicates by `trade_id`, which prevents the same idea from being submitted repeatedly. Every trade idea gets a status such as:

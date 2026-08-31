@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.main import (
-    TradeIdeaWebhook,
+    TradeIdea,
     TradingDecision,
     apply_risk_gates,
     build_trade_decision,
@@ -13,8 +13,8 @@ from app.main import (
 )
 
 
-def make_payload(symbol: str = "AAPL", direction: str = "bullish") -> TradeIdeaWebhook:
-    return TradeIdeaWebhook(
+def make_payload(symbol: str = "AAPL", direction: str = "bullish") -> TradeIdea:
+    return TradeIdea(
         alert_name="test",
         source="trade_idea",
         symbol=symbol,
@@ -369,8 +369,7 @@ def test_trade_idea_duplicate_is_skipped_by_ledger(tmp_path):
 
 
 def test_build_option_order_request_prefers_contract_symbol(monkeypatch):
-    from app.main import build_option_trade_request
-    from alpaca.trading.enums import OrderSide, OrderType
+    from app.main import build_option_trade_request, OrderSide, OrderType
 
     monkeypatch.setattr("app.main.resolve_option_contract_symbol", lambda *args, **kwargs: "MSFT240919C00450000")
 
