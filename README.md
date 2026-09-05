@@ -21,7 +21,9 @@ The app is intentionally simple and layered around a few core pieces:
 
 - [app/optionomics_client.py](app/optionomics_client.py): fetches trade ideas from the Optionomics API
 - [app/main.py](app/main.py): orchestrates validation, risk gates, execution, and startup logic
-- [app/webull-buy-combo-option.py](app/webull-buy-combo-option.py): broker-side order submission helpers
+- [app/webull-buy-combo-stock.py](app/webull-buy-combo-stock.py): stock bracket order submission used by the polling service
+- [app/webull-buy-combo-option.py](app/webull-buy-combo-option.py): option bracket order submission used by `app/main-option.py`
+- [app/webull_broker.py](app/webull_broker.py): shared sandbox client, account lookup, and order IDs
 - [app/webull-option-chain.py](app/webull-option-chain.py): option-chain lookup utilities
 - [bot.sqlite3](bot.sqlite3): local SQLite ledger used for dedupe and auditing
 - [tests/test_apply_risk_gates.py](tests/test_apply_risk_gates.py): regression tests for the decision/risk logic

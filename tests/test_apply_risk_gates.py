@@ -362,7 +362,7 @@ def test_build_option_order_request_prefers_contract_symbol(monkeypatch):
         os.remove("test_duplicate_ledger.sqlite3")
 
 
-def test_submit_paper_order_uses_entry_stop_and_target_levels(monkeypatch):
+def test_submit_paper_order_calculates_stop_and_target_from_entry(monkeypatch):
     from app.main import Settings, TradingDecision, TradeIdea, submit_paper_order
 
     captured = {}
@@ -394,13 +394,13 @@ def test_submit_paper_order_uses_entry_stop_and_target_levels(monkeypatch):
         direction="bullish",
         strategy="test",
         entry_price=100.0,
-        target_price=110.0,
-        stop_price=95.0,
+        target_price=125.0,
+        stop_price=80.0,
         triggered_at=datetime.now(timezone.utc),
         matched_criteria={},
     )
 
-    monkeypatch.setattr("app.main._load_webull_combo_module", lambda: FakeWebullModule())
+    monkeypatch.setattr("app.webull_submitter._load_webull_stock_module", lambda: FakeWebullModule())
 
     submit_paper_order(decision, settings, "fingerprint-1234567890abcd", payload)
 
@@ -413,8 +413,8 @@ def test_buy_stock_submits_combo_bracket_order(monkeypatch):
     import importlib.util
     from pathlib import Path
 
-    module_path = Path(__file__).resolve().parent.parent / "app" / "webull-buy-combo-option.py"
-    spec = importlib.util.spec_from_file_location("webull_combo_option_test", module_path)
+    module_path = Path(__file__).resolve().parent.parent / "app" / "webull-buy-combo-stock.py"
+    spec = importlib.util.spec_from_file_location("webull_combo_stock_test", module_path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
     spec.loader.exec_module(module)
@@ -481,7 +481,7 @@ def test_submit_paper_order_fails_immediately_on_webull_429(monkeypatch):
     )
     settings = Settings(DRY_RUN=False)
 
-    monkeypatch.setattr("app.main._load_webull_combo_module", lambda: FakeWebullModule())
+    monkeypatch.setattr("app.webull_submitter._load_webull_stock_module", lambda: FakeWebullModule())
 
     with pytest.raises(RuntimeError, match="429|TOO_MANY_REQUESTS"):
         submit_paper_order(decision, settings, "fingerprint-1234567890abcd")

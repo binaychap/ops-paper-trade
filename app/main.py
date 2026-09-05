@@ -20,7 +20,7 @@ import sys
 
 from app.optionomics_client import fetch_trade_ideas
 from app.optionomics import build_trade_decision_from_optionomics_payload
-from app.webull_submitter import submit_paper_order, _is_webull_rate_limit_error as is_webull_rate_limit_error, _load_webull_combo_module as _load_webull_combo_module_impl
+from app.webull_submitter import submit_paper_order, _is_webull_rate_limit_error as is_webull_rate_limit_error
 from app.ledger import Ledger
 
 from fastapi import FastAPI
@@ -337,11 +337,6 @@ def build_trade_decision_from_optionomics_payload(payload: dict[str, Any], setti
     if isinstance(result, dict):
         return TradingDecision(**result)
     return result
-
-
-def _load_webull_combo_module() -> Any:
-    # expose loader for tests/monkeypatching but delegate to webull_submitter implementation
-    return _load_webull_combo_module_impl()
 
 
 def build_option_trade_request(

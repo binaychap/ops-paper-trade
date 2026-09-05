@@ -5,22 +5,11 @@ from pathlib import Path
 from typing import Any
 
 
-def _load_webull_combo_module() -> Any:
-    # allow tests to monkeypatch loader by setting app.main._load_webull_combo_module
-    try:
-        import importlib
-        main_mod = importlib.import_module("app.main")
-        loader = getattr(main_mod, "_load_webull_combo_module", None)
-        if callable(loader) and loader is not _load_webull_combo_module:
-            return loader()
-    except Exception:
-        # ignore and fall back to default loader
-        pass
-
-    module_path = Path(__file__).resolve().parent / "webull-buy-combo-option.py"
-    spec = importlib.util.spec_from_file_location("webull_combo_option", module_path)
+def _load_webull_stock_module() -> Any:
+    module_path = Path(__file__).resolve().parent / "webull-buy-combo-stock.py"
+    spec = importlib.util.spec_from_file_location("webull_combo_stock", module_path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load Webull combo module from {module_path}")
+        raise RuntimeError(f"Unable to load Webull stock combo module from {module_path}")
 
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -56,7 +45,7 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
             "notional_usd": d.get("notional_usd"),
         }
 
-    webull_module = _load_webull_combo_module()
+    webull_module = _load_webull_stock_module()
     account_id = webull_module.get_account_id()
 
     reference_level = None
@@ -67,8 +56,8 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
 
     quantity = 1
     entry_price = float(payload.entry_price) if payload is not None and getattr(payload, "entry_price", None) is not None else max(float(d.get("notional_usd") or 0.0) / 100.0, 0.01)
-    stop_price = float(payload.stop_price) if payload is not None and getattr(payload, "stop_price", None) is not None else entry_price * 0.95
-    target_price = float(payload.target_price) if payload is not None and getattr(payload, "target_price", None) is not None else entry_price * 1.10
+    stop_price = round(entry_price * 0.95, 2)
+    target_price = round(entry_price * 1.10, 2)
 
     order_result = webull_module.buy_stock(
         account_id=account_id,
