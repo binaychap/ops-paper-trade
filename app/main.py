@@ -19,6 +19,9 @@ from enum import Enum
 import sys
 
 from app.optionomics_client import fetch_trade_ideas
+from app.optionomics import build_trade_decision_from_optionomics_payload
+from app.webull_submitter import submit_paper_order, _is_webull_rate_limit_error as is_webull_rate_limit_error, _load_webull_combo_module as _load_webull_combo_module_impl
+from app.ledger import Ledger
 
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -130,72 +133,11 @@ class TradingDecision(BaseModel):
         return value.strip().upper()
 
 
-class OptionomicsTradeIdea(BaseModel):
-    """Normalized Optionomics trade-idea payload consumed from the API."""
 
-    id: str | None = None
-    symbol: str
-    direction: Literal["bullish", "bearish", "neutral"]
-    strategy: str | None = None
-    pipeline_short_name: str | None = None
-    pipeline_name: str | None = None
-    levels: dict[str, float] = Field(default_factory=dict)
-    generated_at: datetime | None = None
-    confidence_score: float | None = None
-    thesis: str | None = None
-    status: str | None = None
-
-    model_config = ConfigDict(extra="ignore")
-
-    @field_validator("symbol")
-    @classmethod
-    def normalize_symbol(cls, value: str) -> str:
-        symbol = value.strip().upper()
-        if not re.fullmatch(r"[A-Z][A-Z0-9.]{0,9}", symbol):
-            raise ValueError("symbol must be a valid ticker")
-        return symbol
-
-    @field_validator("levels")
-    @classmethod
-    def normalize_levels(cls, value: dict[str, Any]) -> dict[str, float]:
-        normalized: dict[str, float] = {}
-        for key, raw in value.items():
-            try:
-                normalized[key] = float(raw)
-            except (TypeError, ValueError):
-                continue
-        return normalized
 
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _coerce_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _normalize_expiration(value: Any) -> str | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
-        try:
-            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    if len(raw) == 8 and raw.isdigit():
-        try:
-            return datetime.strptime(raw, "%Y%m%d").strftime("%Y-%m-%d")
-        except ValueError:
-            pass
-    return raw
-
 
 def resolve_option_contract_symbol(
     symbol: str,
@@ -217,219 +159,6 @@ def resolve_option_contract_symbol(
     return f"{ticker}{expiration}{option_type}{strike_code}"
 
 
-def build_option_trade_request(
-    decision: TradingDecision,
-    *,
-    direction: Literal["bullish", "bearish", "neutral"] = "bullish",
-    notional_usd: float | None = None,
-    client_order_id: str | None = None,
-    payload: dict[str, Any] | None = None,
-):
-    # local enums OrderClass, OrderSide, OrderType, TimeInForce defined in this module
-    payload = payload or {}
-    contract_symbol = resolve_option_contract_symbol(
-        decision.symbol,
-        direction=direction,
-        price_reference=float(payload.get("levels", {}).get("entry") or payload.get("entry_price") or max(decision.notional_usd, 1.0) / 10.0),
-    )
-
-    requested_notional = round(float(notional_usd if notional_usd is not None else decision.notional_usd), 2)
-    return SimpleNamespace(
-        symbol=contract_symbol,
-        notional=requested_notional,
-        side=OrderSide.BUY if decision.action == "buy" else OrderSide.SELL,
-        type=OrderType.MARKET,
-        time_in_force=TimeInForce.DAY,
-        client_order_id=client_order_id or f"option-{decision.symbol.lower()}-{int(time.time())}",
-        order_class=OrderClass.SIMPLE,
-    )
-
-
-class Ledger:
-    """Small SQLite ledger for received events, decisions, and orders."""
-
-    def __init__(self, database_path: str) -> None:
-        self.path = Path(database_path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.initialize()
-
-    def initialize(self) -> None:
-        with closing(sqlite3.connect(self.path, timeout=10)) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS events (
-                    fingerprint TEXT PRIMARY KEY,
-                    status TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    decision_json TEXT,
-                    order_json TEXT,
-                    error TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS optionomics_trade_ideas (
-                    trade_id TEXT PRIMARY KEY,
-                    symbol TEXT NOT NULL,
-                    direction TEXT NOT NULL,
-                    strategy TEXT,
-                    pipeline_name TEXT,
-                    payload_json TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    decision_json TEXT,
-                    order_json TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            conn.commit()
-
-    def save_trade_idea(self, trade_id: str, payload: dict[str, Any], *, status: str = "queued") -> None:
-        now = utc_now_iso()
-        payload_json = json.dumps(payload, sort_keys=True)
-
-        with closing(sqlite3.connect(self.path, timeout=10)) as conn:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO optionomics_trade_ideas
-                    (trade_id, symbol, direction, strategy, pipeline_name, payload_json, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    trade_id,
-                    str(payload.get("symbol") or ""),
-                    str(payload.get("direction") or "neutral"),
-                    str(payload.get("strategy") or ""),
-                    str(payload.get("pipeline_name") or payload.get("pipeline_short_name") or ""),
-                    payload_json,
-                    status,
-                    now,
-                    now,
-                ),
-            )
-            conn.commit()
-
-    def is_trade_idea_seen(self, trade_id: str) -> bool:
-        with closing(sqlite3.connect(self.path, timeout=10)) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM optionomics_trade_ideas WHERE trade_id = ? LIMIT 1",
-                (trade_id,),
-            ).fetchone()
-        return row is not None
-
-    def has_trade_or_symbol_seen(self, *, trade_id: str | None = None, symbol: str | None = None) -> bool:
-        if trade_id is None and symbol is None:
-            return False
-
-        if trade_id is None:
-            return False
-
-        with closing(sqlite3.connect(self.path, timeout=10)) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM optionomics_trade_ideas WHERE trade_id = ? LIMIT 1",
-                (str(trade_id),),
-            ).fetchone()
-        return row is not None
-
-    def has_ordered_trade(self, *, trace_id: str | None = None, symbol: str | None = None) -> bool:
-        if trace_id is None and symbol is None:
-            return False
-
-        trace_id = str(trace_id).strip() if trace_id is not None else None
-        symbol = str(symbol).strip().upper() if symbol is not None else None
-
-        with closing(sqlite3.connect(self.path, timeout=10)) as conn:
-            if trace_id is not None and symbol is not None:
-                row = conn.execute(
-                    "SELECT 1 FROM optionomics_trade_ideas WHERE status = ? AND trade_id = ? AND symbol = ? LIMIT 1",
-                    ("ordered", trace_id, symbol),
-                ).fetchone()
-            elif trace_id is not None:
-                row = conn.execute(
-                    "SELECT 1 FROM optionomics_trade_ideas WHERE status = ? AND trade_id = ? LIMIT 1",
-                    ("ordered", trace_id),
-                ).fetchone()
-            elif symbol is not None:
-                row = conn.execute(
-                    "SELECT 1 FROM optionomics_trade_ideas WHERE status = ? AND symbol = ? LIMIT 1",
-                    ("ordered", symbol),
-                ).fetchone()
-            else:
-                return False
-        return row is not None
-
-    def mark_trade_idea_status(self, trade_id: str, *, status: str, decision: TradingDecision | None = None, order_payload: dict[str, Any] | None = None) -> None:
-        now = utc_now_iso()
-        decision_json = json.dumps(decision.model_dump(mode="json"), sort_keys=True) if decision else None
-        order_json = json.dumps(order_payload or {}, sort_keys=True)
-
-        with closing(sqlite3.connect(self.path, timeout=10)) as conn:
-            conn.execute(
-                """
-                UPDATE optionomics_trade_ideas
-                   SET status = ?, decision_json = ?, order_json = ?, updated_at = ?
-                 WHERE trade_id = ?
-                """,
-                (status, decision_json, order_json, now, trade_id),
-            )
-            conn.commit()
-
-    def reserve(self, fingerprint: str, payload: TradeIdea) -> bool:
-        now = utc_now_iso()
-        payload_json = json.dumps(payload.model_dump(mode="json"), sort_keys=True)
-
-        with closing(sqlite3.connect(self.path, timeout=10)) as conn:
-            cursor = conn.execute(
-                """
-                INSERT OR IGNORE INTO events
-                    (fingerprint, status, payload_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (fingerprint, "queued", payload_json, now, now),
-            )
-            conn.commit()
-
-        return cursor.rowcount == 1
-
-    def finish(
-        self,
-        fingerprint: str,
-        status: str,
-        decision: TradingDecision,
-        order_payload: dict[str, Any] | None = None,
-    ) -> None:
-        now = utc_now_iso()
-        decision_json = json.dumps(decision.model_dump(mode="json"), sort_keys=True)
-        order_json = json.dumps(order_payload or {}, sort_keys=True)
-
-        with closing(sqlite3.connect(self.path, timeout=10)) as conn:
-            conn.execute(
-                """
-                                UPDATE events
-                                     SET status = ?, decision_json = ?, order_json = ?, error = NULL, updated_at = ?
-                                 WHERE fingerprint = ?
-                """,
-                (status, decision_json, order_json, now, fingerprint),
-            )
-            conn.commit()
-
-    def fail(self, fingerprint: str, error: str) -> None:
-        now = utc_now_iso()
-
-        with closing(sqlite3.connect(self.path, timeout=10)) as conn:
-            conn.execute(
-                """
-                                UPDATE events
-                                     SET status = ?, error = ?, updated_at = ?
-                                 WHERE fingerprint = ?
-                """,
-                ("failed", error[:1000], now, fingerprint),
-            )
-            conn.commit()
 
 
 app = FastAPI(title="Optionomics Trade Ideas Trading Bot", version="1.0.0")
@@ -464,7 +193,8 @@ def poll_optionomics_trade_ideas() -> list[dict[str, Any]]:
                 continue
 
             ledger.save_trade_idea(trade_id, idea, status="queued")
-            decision = build_trade_decision_from_optionomics_payload(idea, settings)
+            decision_data = build_trade_decision_from_optionomics_payload(idea, settings)
+            decision = TradingDecision(**decision_data)
             if decision.action == "skip":
                 ledger.mark_trade_idea_status(trade_id, status="skipped", decision=decision)
                 logger.info("Skipping %s from Optionomics: %s", decision.symbol, decision.rationale)
@@ -504,8 +234,12 @@ def poll_optionomics_trade_ideas() -> list[dict[str, Any]]:
 
             logger.info("Optionomics %s decision: %s -> %s", decision.symbol, decision.strategy, order_payload)
         except Exception as exc:
-            ledger.mark_trade_idea_status(trade_id, status="failed", decision=build_trade_decision_from_optionomics_payload(idea, settings) if "direction" in idea else None)
-            if _is_webull_rate_limit_error(exc):
+            ledger.mark_trade_idea_status(
+                trade_id,
+                status="failed",
+                decision=TradingDecision(**build_trade_decision_from_optionomics_payload(idea, settings)) if "direction" in idea else None,
+            )
+            if is_webull_rate_limit_error(exc):
                 logger.warning(
                     "Webull rate limit hit while processing Optionomics trade %s; trade marked failed and will be retried on the next poll: %s",
                     trade_id,
@@ -587,24 +321,54 @@ def fingerprint_for(payload: TradeIdea) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-def normalize_confidence(value: Any, *, default: float = 1.0) -> float:
-    try:
-        numeric = float(value) if value is not None else default
-    except (TypeError, ValueError):
-        return default
-
-    if numeric != numeric or numeric in (float("inf"), float("-inf")):
-        return default
-
-    return round(max(0.0, min(1.0, numeric)), 4)
-
-
 def validate_optionomics_symbol_match(payload: dict[str, Any], decision: TradingDecision) -> bool:
     payload_symbol = str(payload.get("symbol") or "").strip().upper()
     decision_symbol = str(decision.symbol or "").strip().upper()
     if not payload_symbol or not decision_symbol:
         return False
     return payload_symbol == decision_symbol
+
+
+def build_trade_decision_from_optionomics_payload(payload: dict[str, Any], settings: Settings) -> TradingDecision:
+    # compatibility wrapper: optionomics.build_trade_decision_from_optionomics_payload returns a dict
+    from app.optionomics import build_trade_decision_from_optionomics_payload as _builder
+
+    result = _builder(payload, settings)
+    if isinstance(result, dict):
+        return TradingDecision(**result)
+    return result
+
+
+def _load_webull_combo_module() -> Any:
+    # expose loader for tests/monkeypatching but delegate to webull_submitter implementation
+    return _load_webull_combo_module_impl()
+
+
+def build_option_trade_request(
+    decision: TradingDecision,
+    *,
+    direction: Literal["bullish", "bearish", "neutral"] = "bullish",
+    notional_usd: float | None = None,
+    client_order_id: str | None = None,
+    payload: dict[str, Any] | None = None,
+):
+    payload = payload or {}
+    contract_symbol = resolve_option_contract_symbol(
+        decision.symbol,
+        direction=direction,
+        price_reference=float(payload.get("levels", {}).get("entry") or payload.get("entry_price") or max(decision.notional_usd, 1.0) / 10.0),
+    )
+
+    requested_notional = round(float(notional_usd if notional_usd is not None else decision.notional_usd), 2)
+    return SimpleNamespace(
+        symbol=contract_symbol,
+        notional=requested_notional,
+        side=OrderSide.BUY if decision.action == "buy" else OrderSide.SELL,
+        type=OrderType.MARKET,
+        time_in_force=TimeInForce.DAY,
+        client_order_id=client_order_id or f"option-{decision.symbol.lower()}-{int(time.time())}",
+        order_class=OrderClass.SIMPLE,
+    )
 
 
 def build_trade_decision(payload: TradeIdea, settings: Settings) -> TradingDecision:
@@ -652,107 +416,6 @@ def build_trade_decision(payload: TradeIdea, settings: Settings) -> TradingDecis
         risk_notes=risk_notes,
     )
 
-
-def validate_optionomics_directional_levels(direction: Literal["bullish", "bearish", "neutral"], entry: float, target: float, stop: float) -> bool:
-    if direction == "bullish":
-        return target > entry and stop < entry
-    if direction == "bearish":
-        return target < entry and stop > entry
-    if direction == "neutral":
-        return target < entry and stop > entry
-    return False
-
-
-def build_trade_decision_from_optionomics_payload(payload: dict[str, Any], settings: Settings) -> TradingDecision:
-    idea = OptionomicsTradeIdea.model_validate(payload)
-    levels = idea.levels
-    pipeline = (idea.pipeline_short_name or idea.pipeline_name or "placeholder").strip()
-    strategy_name = "iron_condor" if (idea.direction == "neutral" or pipeline.lower() == "crush") else "placeholder"
-
-    normalized_confidence = normalize_confidence(idea.confidence_score, default=1.0)
-
-    if idea.direction == "bullish":
-        action: Literal["skip", "buy", "sell_short"] = "buy"
-        rationale = f"Optionomics {pipeline} idea: bullish setup flagged for {strategy_name} execution."
-    elif idea.direction == "bearish":
-        if settings.allow_short_selling:
-            action = "sell_short"
-            rationale = f"Optionomics {pipeline} idea: bearish setup flagged for {strategy_name} execution."
-        else:
-            action = "skip"
-            rationale = "Short selling disabled; skipping bearish Optionomics trade idea."
-            return TradingDecision(
-                action=action,
-                symbol=idea.symbol,
-                strategy=strategy_name,
-                notional_usd=0.0,
-                confidence=normalized_confidence,
-                rationale=rationale,
-                risk_notes=["Short selling disabled"],
-            )
-    else:
-        action = "buy"
-        rationale = f"Optionomics {pipeline} idea: neutral setup selected for iron_condor strategy execution."
-
-    if action == "buy" and (idea.direction == "neutral" or pipeline.lower() == "crush"):
-        logger.info("Optionomics signal selected strategy=%s for symbol=%s", strategy_name, idea.symbol)
-
-    entry = levels.get("entry")
-    target = levels.get("target")
-    stop = levels.get("stop")
-    current = levels.get("current")
-    peak = levels.get("peak")
-
-    if entry is None or target is None or stop is None:
-        return TradingDecision(
-            action="skip",
-            symbol=idea.symbol,
-            strategy=strategy_name,
-            notional_usd=0.0,
-            confidence=normalized_confidence,
-            rationale="Optionomics levels missing required entry, target, and stop values.",
-            risk_notes=["Missing price levels"],
-        )
-
-    if action == "buy":
-        if not validate_optionomics_directional_levels(idea.direction, entry, target, stop):
-            message = (
-                "Neutral Optionomics iron-condor idea has invalid price levels."
-                if idea.direction == "neutral"
-                else "Bullish Optionomics idea has invalid price levels."
-            )
-            return TradingDecision(
-                action="skip",
-                symbol=idea.symbol,
-                strategy=strategy_name,
-                notional_usd=0.0,
-                confidence=normalized_confidence,
-                rationale=message,
-                risk_notes=["Neutral iron-condor price levels invalid" if idea.direction == "neutral" else "Bullish price levels invalid"],
-            )
-    else:
-        if not validate_optionomics_directional_levels(idea.direction, entry, target, stop):
-            return TradingDecision(
-                action="skip",
-                symbol=idea.symbol,
-                strategy=strategy_name,
-                notional_usd=0.0,
-                confidence=normalized_confidence,
-                rationale="Bearish Optionomics idea has invalid price levels.",
-                risk_notes=["Bearish price levels invalid"],
-            )
-
-    notes = [f"Pipeline={pipeline}", f"Entry={entry}", f"Target={target}", f"Stop={stop}", f"Current={current}", f"Peak={peak}"]
-    notional = settings.max_notional_usd
-    return TradingDecision(
-        action=action,
-        symbol=idea.symbol,
-        strategy=strategy_name,
-        notional_usd=round(notional, 2),
-        confidence=normalized_confidence,
-        rationale=f"{rationale} Strategy selected: {strategy_name}. Levels: {', '.join(notes)}",
-        risk_notes=notes,
-    )
 
 
 def skip_decision(decision: TradingDecision, reason: str) -> TradingDecision:
@@ -805,123 +468,6 @@ def apply_risk_gates(
 
     notional = min(decision.notional_usd, settings.max_notional_usd)
     return decision.model_copy(update={"notional_usd": round(notional, 2)})
-
-
-def _load_webull_combo_module() -> Any:
-    module_path = Path(__file__).resolve().parent / "webull-buy-combo-option.py"
-    spec = importlib.util.spec_from_file_location("webull_combo_option", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load Webull combo module from {module_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _load_webull_option_chain_module() -> Any:
-    module_path = Path(__file__).resolve().parent / "webull-option-chain.py"
-    spec = importlib.util.spec_from_file_location("webull_option_chain", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load Webull option-chain module from {module_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _is_webull_rate_limit_error(exc: BaseException) -> bool:
-    message = str(exc).lower()
-    return "429" in message or "too_many_requests" in message or "too many requests" in message or "rate limit" in message
-
-
-def submit_paper_order(
-    decision: TradingDecision,
-    settings: Settings,
-    fingerprint: str,
-    payload: TradeIdea | None = None,
-) -> dict[str, Any]:
-    client_order_id = f"om-{fingerprint[:24]}"
-    logger.info("Processing paper order for %s", decision.symbol)
-    if settings.dry_run:
-        logger.info("DRY_RUN=true; broker order suppressed for %s", decision.symbol)
-        return {
-            "dry_run": True,
-            "client_order_id": client_order_id,
-            "symbol": decision.symbol,
-            "action": decision.action,
-            "notional_usd": decision.notional_usd,
-        }
-
-    webull_module = _load_webull_combo_module()
-    account_id = webull_module.get_account_id()
-    print("Using account:", account_id)
-
-    reference_level = None
-    if payload is not None:
-        reference_level = payload.entry_price or payload.target_price or payload.stop_price
-    if reference_level is None:
-        reference_level = max(float(decision.notional_usd) / 100.0, 1.0)
-
-    quantity = 1
-    entry_price = float(payload.entry_price) if payload is not None and payload.entry_price is not None else max(float(decision.notional_usd) / 100.0, 0.01)
-    stop_price = float(payload.stop_price) if payload is not None and payload.stop_price is not None else entry_price * 0.95
-    target_price = float(payload.target_price) if payload is not None and payload.target_price is not None else entry_price * 1.10
-
-    order_result = webull_module.buy_stock(
-        account_id=account_id,
-        symbol=decision.symbol,
-        quantity=quantity,
-        entry_price=entry_price,
-        stop_price=stop_price,
-        target_price=target_price,
-    )
-
-    logger.info(
-        "Webull stock order submitted successfully: symbol=%s side=%s notional_usd=%s order_id=%s",
-        decision.symbol,
-        "BUY" if decision.action == "buy" else "SELL",
-        decision.notional_usd,
-        str(order_result.get("order_id") or order_result.get("client_order_id") or ""),
-    )
-
-    return {
-        "dry_run": False,
-        "id": str(order_result.get("order_id") or order_result.get("client_order_id") or ""),
-        "client_order_id": client_order_id,
-        "symbol": decision.symbol,
-        "status": "submitted",
-        "side": "BUY" if decision.action == "buy" else "SELL",
-        "notional_usd": decision.notional_usd,
-        "broker": "webull",
-    }
-
-
-def process_trade_idea(payload: TradeIdea, fingerprint: str) -> None:
-    settings = get_settings()
-    ledger = Ledger(settings.database_path)
-
-    try:
-        decision = build_trade_decision(payload, settings)
-        gated_decision = apply_risk_gates(payload, decision, settings)
-
-        if gated_decision.action == "skip":
-            ledger.finish(fingerprint, "skipped", gated_decision)
-            logger.info("Skipped %s: %s", payload.symbol, gated_decision.rationale)
-            return
-
-        order_payload = maybe_submit_order(ledger, gated_decision, settings, payload)
-        if order_payload is None:
-            ledger.finish(fingerprint, "skipped", gated_decision)
-            logger.info("Skipped duplicate order for %s", payload.symbol)
-            return
-
-        final_status = "dry_run" if settings.dry_run else "ordered"
-        ledger.finish(fingerprint, final_status, gated_decision, order_payload)
-        logger.info("Processed %s with status %s", payload.symbol, final_status)
-    except Exception as exc:
-        ledger.fail(fingerprint, str(exc))
-        logger.exception("Failed to process event %s", fingerprint)
-        raise
 
 
 @app.get("/health")
