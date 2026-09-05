@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("optionomics_client")
+logger.setLevel(logging.INFO)
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 

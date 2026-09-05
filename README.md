@@ -284,6 +284,9 @@ PYTHONPATH=. uv run python -m compileall app
 
 ```bash
 sqlite3 bot.sqlite3 "SELECT trade_id, symbol, status, decision_json FROM optionomics_trade_ideas ORDER BY created_at DESC LIMIT 20;"
+
+sql query
+SELECT trade_id, symbol, status, decision_json FROM optionomics_trade_ideas ORDER BY created_at DESC LIMIT 20;
 ```
 
 ```bash

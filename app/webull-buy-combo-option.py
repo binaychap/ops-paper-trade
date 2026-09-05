@@ -13,24 +13,34 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 # WEBULL SANDBOX
 # ============================================================
 
-APP_KEY = os.environ["WEBULL_APP_KEY"]
-APP_SECRET = os.environ["WEBULL_APP_SECRET"]
+_trade_client = None
 
-api_client = ApiClient(
-    APP_KEY,
-    APP_SECRET,
-    "us"
-)
 
-api_client.add_endpoint(
-    "us",
-    "api.sandbox.webull.com"
-)
+def get_trade_client():
+    global _trade_client
 
-# Prevent the SDK from creating local file logs in the repository root.
-api_client.set_stream_logger(stream=sys.stdout)
+    if _trade_client is not None:
+        return _trade_client
 
-trade_client = TradeClient(api_client)
+    app_key = os.environ["WEBULL_APP_KEY"]
+    app_secret = os.environ["WEBULL_APP_SECRET"]
+
+    api_client = ApiClient(
+        app_key,
+        app_secret,
+        "us"
+    )
+
+    api_client.add_endpoint(
+        "us",
+        "api.sandbox.webull.com"
+    )
+
+    # Prevent the SDK from creating local file logs in the repository root.
+    api_client.set_stream_logger(stream=sys.stdout)
+
+    _trade_client = TradeClient(api_client)
+    return _trade_client
 
 
 # ============================================================
@@ -38,7 +48,7 @@ trade_client = TradeClient(api_client)
 # ============================================================
 
 def get_account_id():
-    response = trade_client.account_v2.get_account_list()
+    response = get_trade_client().account_v2.get_account_list()
 
     if response.status_code != 200:
         raise RuntimeError(
@@ -61,6 +71,76 @@ def get_account_id():
 
 def new_id():
     return uuid.uuid4().hex[:32]
+
+
+def buy_stock(
+    account_id: str,
+    symbol: str,
+    quantity: int,
+    entry_price: float,
+    stop_price: float,
+    target_price: float,
+    trade_client=None,
+):
+    trade_client = trade_client or get_trade_client()
+    symbol = symbol.upper()
+    combo_id = new_id()
+
+    master_order = {
+        "client_order_id": new_id(),
+        "combo_type": "MASTER",
+        "symbol": symbol,
+        "instrument_type": "EQUITY",
+        "market": "US",
+        "side": "BUY",
+        "order_type": "LIMIT",
+        "limit_price": f"{float(entry_price):.2f}",
+        "quantity": str(quantity),
+        "time_in_force": "DAY",
+        "support_trading_session": "CORE",
+        "entrust_type": "QTY",
+    }
+
+    take_profit_order = {
+        "client_order_id": new_id(),
+        "combo_type": "STOP_PROFIT",
+        "symbol": symbol,
+        "instrument_type": "EQUITY",
+        "market": "US",
+        "side": "SELL",
+        "order_type": "LIMIT",
+        "limit_price": f"{float(target_price):.2f}",
+        "quantity": str(quantity),
+        "time_in_force": "DAY",
+        "support_trading_session": "CORE",
+        "entrust_type": "QTY",
+    }
+
+    stop_loss_order = {
+        "client_order_id": new_id(),
+        "combo_type": "STOP_LOSS",
+        "symbol": symbol,
+        "instrument_type": "EQUITY",
+        "market": "US",
+        "side": "SELL",
+        "order_type": "STOP_LOSS",
+        "stop_price": f"{float(stop_price):.2f}",
+        "quantity": str(quantity),
+        "time_in_force": "DAY",
+        "support_trading_session": "CORE",
+        "entrust_type": "QTY",
+    }
+
+    new_orders = [master_order, take_profit_order, stop_loss_order]
+    response = trade_client.order_v3.place_order(account_id, new_orders, client_combo_order_id=combo_id)
+    if response.status_code != 200:
+        raise RuntimeError(f"Stock order failed: {response.status_code} {response.text}")
+
+    result = response.json()
+    print("\nStock bracket combo submitted successfully:")
+    print(json.dumps({"client_combo_order_id": combo_id, "new_orders": new_orders}, indent=2))
+    print(json.dumps(result, indent=2))
+    return result
 
 
 # ============================================================
@@ -116,7 +196,9 @@ def buy_call_with_bracket(
     entry_limit: float,
     profit_percent: float = 10,
     stop_loss_percent: float = 5,
+    trade_client=None,
 ):
+    trade_client = trade_client or get_trade_client()
     """
     Example:
 

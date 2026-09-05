@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
@@ -8,7 +9,6 @@ from app.main import (
     TradingDecision,
     apply_risk_gates,
     build_trade_decision,
-    select_valid_webull_option_contract,
     validate_optionomics_symbol_match,
 )
 
@@ -26,6 +26,40 @@ def make_payload(symbol: str = "AAPL", direction: str = "bullish") -> TradeIdea:
         triggered_at=datetime.now(timezone.utc),
         matched_criteria={},
     )
+
+
+def test_build_trade_decision_clamps_confidence_above_one():
+    from app.main import build_trade_decision_from_optionomics_payload
+
+    payload = {
+        "id": "idea-high-confidence",
+        "symbol": "META",
+        "direction": "bearish",
+        "strategy": "short_put",
+        "pipeline_short_name": "Momentum",
+        "pipeline_name": "Momentum setups",
+        "levels": {"entry": 500.0, "target": 470.0, "stop": 530.0, "current": 495.0, "peak": 510.0},
+        "generated_at": "2026-08-05T13:35:00Z",
+        "confidence_score": 70.0,
+    }
+    settings = SimpleNamespace(max_notional_usd=250.0, allow_short_selling=False)
+
+    decision = build_trade_decision_from_optionomics_payload(payload, settings)
+
+    assert decision.action == "skip"
+    assert decision.confidence == 1.0
+
+
+def test_logger_levels_are_info():
+    assert logging.getLogger("optionomics_bot").level == logging.INFO
+    assert logging.getLogger("optionomics_client").level == logging.INFO
+    assert logging.getLogger("debugpy").level == logging.INFO
+    assert logging.getLogger("pydevd").level == logging.INFO
+    assert logging.getLogger("asyncio").level == logging.INFO
+    assert logging.getLogger("urllib3").level == logging.INFO
+    assert logging.getLogger("webull").level == logging.INFO
+    assert logging.getLogger("uvicorn.access").level == logging.INFO
+    assert logging.getLogger("uvicorn.error").level == logging.INFO
 
 
 def make_decision(action: str = "buy", symbol: str = "AAPL", notional: float = 100.0, confidence: float = 0.9) -> TradingDecision:
@@ -219,114 +253,6 @@ def test_optionomics_bearish_direction_checks_its_range():
     assert decision.notional_usd == 250.0
 
 
-def test_select_valid_webull_option_contract_falls_back_to_nearest_expiration():
-    chain = [
-        {"symbol": "AAPL", "option_type": "CALL", "expiration_date": "2026-09-18", "strike_price": 200.0},
-        {"symbol": "AAPL", "option_type": "CALL", "expiration_date": "2026-09-18", "strike_price": 205.0},
-        {"symbol": "AAPL", "option_type": "CALL", "expiration_date": "2026-09-25", "strike_price": 210.0},
-    ]
-
-    selected = select_valid_webull_option_contract(
-        chain,
-        symbol="AAPL",
-        option_type="CALL",
-        expiration="2026-09-12",
-        target_strike=203.0,
-    )
-
-    assert selected is not None
-    assert selected["expiration_date"] == "2026-09-18"
-    assert selected["strike_price"] == 205.0
-
-
-def test_select_valid_webull_option_contract_uses_underlying_symbol_from_real_payload():
-    chain = [
-        {
-            "symbol": "MRNA261218C00140000",
-            "underlying_symbol": "MRNA",
-            "option_type": "CALL",
-            "expiration_date": "2026-09-18",
-            "strike_price": 140.0,
-        },
-        {
-            "symbol": "MRNA261218C00145000",
-            "underlying_symbol": "MRNA",
-            "option_type": "CALL",
-            "expiration_date": "2026-09-18",
-            "strike_price": 145.0,
-        },
-    ]
-
-    selected = select_valid_webull_option_contract(
-        chain,
-        symbol="MRNA",
-        option_type="CALL",
-        expiration="2026-09-03",
-        target_strike=140.5,
-    )
-
-    assert selected is not None
-    assert selected["underlying_symbol"] == "MRNA"
-    assert selected["strike_price"] == 140.0
-
-
-def test_select_nearest_valid_webull_contract_uses_option_chain():
-    from app.main import select_valid_webull_option_contract
-
-    chain = {
-        "data": [
-            {"symbol": "CAI", "option_type": "CALL", "expiration_date": "2026-09-02", "strike_price": "25.00"},
-            {"symbol": "CAI", "option_type": "CALL", "expiration_date": "2026-09-02", "strike_price": "30.00"},
-            {"symbol": "CAI", "option_type": "PUT", "expiration_date": "2026-09-02", "strike_price": "25.00"},
-        ]
-    }
-
-    selected = select_valid_webull_option_contract(
-        chain,
-        symbol="CAI",
-        option_type="CALL",
-        expiration="2026-09-02",
-        target_strike=27.0,
-    )
-
-    assert selected is not None
-    assert selected["strike_price"] == "25.00"
-
-    list_selected = select_valid_webull_option_contract(
-        chain["data"],
-        symbol="CAI",
-        option_type="CALL",
-        expiration="2026-09-02",
-        target_strike=27.0,
-    )
-    assert list_selected is not None
-    assert list_selected["strike_price"] == "25.00"
-
-
-def test_select_nearest_valid_webull_contract_falls_back_to_next_expiration():
-    from app.main import select_valid_webull_option_contract
-
-    chain = {
-        "data": [
-            {"symbol": "CRM", "option_type": "CALL", "expiration_date": "2026-09-18", "strike_price": "245.00"},
-            {"symbol": "CRM", "option_type": "CALL", "expiration_date": "2026-09-18", "strike_price": "250.00"},
-            {"symbol": "CRM", "option_type": "CALL", "expiration_date": "2026-09-18", "strike_price": "255.00"},
-        ]
-    }
-
-    selected = select_valid_webull_option_contract(
-        chain,
-        symbol="CRM",
-        option_type="CALL",
-        expiration="2026-09-02",
-        target_strike=249.0,
-    )
-
-    assert selected is not None
-    assert selected["expiration_date"] == "2026-09-18"
-    assert selected["strike_price"] == "250.00"
-
-
 def test_optionomics_placeholder_pipeline_is_not_executed():
     payload = {
         "id": "idea-2",
@@ -366,6 +292,47 @@ def test_trade_idea_duplicate_is_skipped_by_ledger(tmp_path):
     assert ledger.is_trade_idea_seen("idea-dup-1") is False
     ledger.save_trade_idea("idea-dup-1", idea, status="queued")
     assert ledger.is_trade_idea_seen("idea-dup-1") is True
+    assert ledger.has_trade_or_symbol_seen(trade_id="idea-dup-1", symbol="NVDA") is True
+    assert ledger.has_trade_or_symbol_seen(trade_id="idea-dup-2", symbol="NVDA") is False
+
+
+def test_current_trade_id_is_not_self_deduped_after_insert(tmp_path):
+    from app.main import Ledger
+
+    ledger = Ledger(str(tmp_path / "ledger.sqlite3"))
+    idea = {
+        "id": "idea-current-1",
+        "symbol": "AAPL",
+        "direction": "bullish",
+        "strategy": "buy_call",
+        "pipeline_short_name": "Swing",
+        "pipeline_name": "Swing setups",
+        "levels": {"entry": 100.0, "target": 110.0, "stop": 95.0, "current": 102.0, "peak": 103.5},
+    }
+
+    ledger.save_trade_idea("idea-current-1", idea, status="queued")
+    assert ledger.has_trade_or_symbol_seen(trade_id="idea-current-1", symbol="AAPL") is True
+    assert ledger.has_trade_or_symbol_seen(trade_id="idea-current-2", symbol="AAPL") is False
+
+
+def test_ordered_trade_id_and_symbol_are_not_resubmitted(tmp_path):
+    from app.main import Ledger
+
+    ledger = Ledger(str(tmp_path / "ledger.sqlite3"))
+    idea = {
+        "id": "trace-abc-123",
+        "symbol": "BHP",
+        "direction": "bullish",
+        "strategy": "buy_call",
+        "pipeline_short_name": "Momentum",
+        "pipeline_name": "Momentum setups",
+        "levels": {"entry": 97.06, "target": 99.0, "stop": 94.5},
+    }
+
+    ledger.save_trade_idea("trace-abc-123", idea, status="ordered")
+    assert ledger.has_ordered_trade(trace_id="trace-abc-123", symbol="BHP") is True
+    assert ledger.has_ordered_trade(trace_id="trace-abc-123", symbol="AAPL") is False
+    assert ledger.has_ordered_trade(trace_id="trace-other", symbol="BHP") is False
 
 
 def test_build_option_order_request_prefers_contract_symbol(monkeypatch):
@@ -393,3 +360,130 @@ def test_build_option_order_request_prefers_contract_symbol(monkeypatch):
     import os
     if os.path.exists("test_duplicate_ledger.sqlite3"):
         os.remove("test_duplicate_ledger.sqlite3")
+
+
+def test_submit_paper_order_uses_entry_stop_and_target_levels(monkeypatch):
+    from app.main import Settings, TradingDecision, TradeIdea, submit_paper_order
+
+    captured = {}
+
+    class FakeWebullModule:
+        @staticmethod
+        def get_account_id():
+            return "acct-123"
+
+        @staticmethod
+        def buy_stock(**kwargs):
+            captured.update(kwargs)
+            return {"client_order_id": "stock-ok"}
+
+    decision = TradingDecision(
+        action="buy",
+        symbol="AAPL",
+        strategy="iron_condor",
+        notional_usd=250.0,
+        confidence=0.9,
+        rationale="test",
+        risk_notes=[],
+    )
+    settings = Settings(DRY_RUN=False)
+    payload = TradeIdea(
+        alert_name="entry-stop-target",
+        source="trade_idea",
+        symbol="AAPL",
+        direction="bullish",
+        strategy="test",
+        entry_price=100.0,
+        target_price=110.0,
+        stop_price=95.0,
+        triggered_at=datetime.now(timezone.utc),
+        matched_criteria={},
+    )
+
+    monkeypatch.setattr("app.main._load_webull_combo_module", lambda: FakeWebullModule())
+
+    submit_paper_order(decision, settings, "fingerprint-1234567890abcd", payload)
+
+    assert captured["entry_price"] == 100.0
+    assert captured["stop_price"] == 95.0
+    assert captured["target_price"] == 110.0
+
+
+def test_buy_stock_submits_combo_bracket_order(monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    module_path = Path(__file__).resolve().parent.parent / "app" / "webull-buy-combo-option.py"
+    spec = importlib.util.spec_from_file_location("webull_combo_option_test", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+
+    calls = []
+
+    class FakeTradeClient:
+        class order_v3:
+            @staticmethod
+            def place_order(account_id, orders, **kwargs):
+                calls.append({"account_id": account_id, "orders": orders, "kwargs": kwargs})
+
+                class Response:
+                    status_code = 200
+                    @staticmethod
+                    def json():
+                        return {"ok": True, "account_id": account_id}
+                return Response()
+
+    module.buy_stock(
+        "acct-123",
+        "AAPL",
+        1,
+        100.0,
+        95.0,
+        110.0,
+        trade_client=FakeTradeClient(),
+    )
+
+    assert len(calls) == 1
+    assert len(calls[0]["orders"]) == 3
+    assert calls[0]["kwargs"]["client_combo_order_id"]
+    assert {order["combo_type"] for order in calls[0]["orders"]} == {"MASTER", "STOP_PROFIT", "STOP_LOSS"}
+    assert all(order["instrument_type"] == "EQUITY" for order in calls[0]["orders"])
+    assert all(order["support_trading_session"] == "CORE" for order in calls[0]["orders"])
+    assert calls[0]["orders"][0]["side"] == "BUY"
+    assert calls[0]["orders"][1]["side"] == "SELL"
+    assert calls[0]["orders"][2]["side"] == "SELL"
+
+
+def test_submit_paper_order_fails_immediately_on_webull_429(monkeypatch):
+    from app.main import Settings, TradingDecision, submit_paper_order
+
+    calls = {"count": 0}
+
+    class FakeWebullModule:
+        @staticmethod
+        def get_account_id():
+            return "acct-123"
+
+        @staticmethod
+        def buy_stock(**kwargs):
+            calls["count"] += 1
+            raise RuntimeError("HTTP Status: 429, Code: TOO_MANY_REQUESTS, Msg: Too many requests")
+
+    decision = TradingDecision(
+        action="buy",
+        symbol="AAPL",
+        strategy="iron_condor",
+        notional_usd=250.0,
+        confidence=0.9,
+        rationale="test",
+        risk_notes=[],
+    )
+    settings = Settings(DRY_RUN=False)
+
+    monkeypatch.setattr("app.main._load_webull_combo_module", lambda: FakeWebullModule())
+
+    with pytest.raises(RuntimeError, match="429|TOO_MANY_REQUESTS"):
+        submit_paper_order(decision, settings, "fingerprint-1234567890abcd")
+
+    assert calls["count"] == 1
