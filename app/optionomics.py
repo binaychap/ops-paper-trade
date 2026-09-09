@@ -64,9 +64,20 @@ def build_trade_decision_from_optionomics_payload(payload: dict[str, Any], setti
     idea = OptionomicsTradeIdea.model_validate(payload)
     levels = idea.levels
     pipeline = (idea.pipeline_short_name or idea.pipeline_name or "placeholder").strip()
-    strategy_name = "iron_condor" if (idea.direction == "neutral" or pipeline.lower() == "crush") else "placeholder"
+    strategy_name = "iron_condor" if pipeline.lower() == "crush" else "placeholder"
 
     normalized_confidence = normalize_confidence(idea.confidence_score, default=1.0)
+
+    if idea.direction == "neutral":
+        return {
+            "action": "skip",
+            "symbol": idea.symbol,
+            "strategy": strategy_name,
+            "notional_usd": 0.0,
+            "confidence": normalized_confidence,
+            "rationale": "Neutral Optionomics trade idea; ignoring it and skipping execution.",
+            "risk_notes": ["Neutral trade idea ignored"],
+        }
 
     if idea.direction == "bullish":
         action = "buy"
@@ -86,8 +97,15 @@ def build_trade_decision_from_optionomics_payload(payload: dict[str, Any], setti
                 "risk_notes": ["Short selling disabled"],
             }
     else:
-        action = "buy"
-        rationale = f"Optionomics {pipeline} idea: neutral setup selected for iron_condor strategy execution."
+        return {
+            "action": "skip",
+            "symbol": idea.symbol,
+            "strategy": strategy_name,
+            "notional_usd": 0.0,
+            "confidence": normalized_confidence,
+            "rationale": "Unsupported Optionomics direction; skipping execution.",
+            "risk_notes": ["Unsupported direction"],
+        }
 
     entry = levels.get("entry")
     target = levels.get("target")

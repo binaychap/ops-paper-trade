@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Local trade activity and scheduled exit status for Ops Paper Trade.">
+  <title>Trade desk · Ops Paper Trade</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/dashboard.js" defer></script>
+</head>
+<body>
+  <aside class="rail"><a class="brand" href="/" aria-label="Ops Paper Trade home"><span class="mark">o.</span><span>OPS<span class="brand-sub">PAPER TRADE</span></span></a><div class="rail-label">WORKSPACE</div><a class="nav-item" href="/" aria-current="page"><span>▤</span> Trade desk</a><div class="rail-bottom"><span class="dot"></span> Local ledger<br><small>Recorded trade activity</small></div></aside>
+  <main>
+    <header class="topbar"><span>WORKSPACE <span class="slash">/</span> TRADE DESK</span><span class="environment">PAPER TRADING</span></header>
+    <section class="heading"><div><div class="eyebrow">YOUR TRADING ACTIVITY, IN ONE PLACE</div><h1>Trade desk<span>.</span></h1><p>From trade idea to final exit. Know exactly where each trade stands.</p></div><div class="refresh-area"><button id="refresh" class="button">↻ Refresh</button><span id="freshness" role="status">Connecting to ledger…</span></div></section>
+    <div id="error" class="alert" role="alert" hidden></div>
+    <section class="metrics" aria-label="Trade summary">
+      <article><span>Trade records</span><strong id="total">—</strong><small>Ideas &amp; linked exit jobs</small></article>
+      <article><span>Brackets submitted</span><strong id="ordered">—</strong><small>Submission, not a confirmed fill</small></article>
+      <article><span>Active exit jobs</span><strong id="active_exits">—</strong><small>Waiting, scheduled or exiting</small></article>
+      <article><span>Completed exits</span><strong id="completed_exits">—</strong><small>Tracked workflow finished</small></article>
+      <article class="attention-card"><span>Needs attention</span><strong id="attention">—</strong><small>Failed ideas or exit errors</small></article>
+    </section>
+    <section class="schedule-strip" aria-label="Scheduler configuration"><span class="schedule-icon">◷</span><div><strong>Next-day exit scheduler</strong><p id="schedule-copy">Loading configuration…</p></div><span id="scheduler-badge" class="badge">—</span><span id="mode-badge" class="mode">—</span></section>
+    <section class="ledger-panel">
+      <div class="panel-heading"><div><h2>Trade activity</h2><p>Idea status and exit progress are tracked separately.</p></div><label class="auto"><input id="auto-refresh" type="checkbox" checked> Auto-refresh · 15s</label></div>
+      <div class="filters"><label class="search"><span class="sr-only">Search symbol or trade ID</span><input id="search" type="search" placeholder="Search symbol or trade ID…"></label><label><span class="sr-only">Idea status</span><select id="idea-filter"><option value="">All idea statuses</option><option>queued</option><option>ordered</option><option>skipped</option><option>dry_run</option><option>failed</option><option value="unlinked">No linked idea</option></select></label><label><span class="sr-only">Exit status</span><select id="exit-filter"><option value="">All exit statuses</option><option>waiting_entry</option><option>scheduled</option><option>cancelling</option><option>submitted</option><option>complete</option><option value="untracked">Not tracked</option></select></label><label class="attention-filter"><input type="checkbox" id="attention-filter"> Needs attention</label></div>
+      <div class="table-scroll"><table><thead><tr><th>Symbol / idea</th><th>Idea status</th><th>Exit progress</th><th>Next-day exit · ET</th><th>Recorded fills</th><th>Updated · ET</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="trades"></tbody></table></div>
+      <div id="empty" class="empty" role="status"><div class="empty-mark">◎</div><h3>Loading trade activity</h3><p>Your recorded trades will appear here.</p></div>
+      <footer class="table-footer"><span id="row-count">—</span><div><button id="previous" class="page-button" disabled>← Previous</button><span id="page-number">1 / 1</span><button id="next" class="page-button" disabled>Next →</button></div></footer>
+    </section>
+    <p class="footnote"><span class="dot"></span> This page reads saved ledger records. It does not query live broker positions or place orders. All displayed times are New York time.</p>
+    <noscript><p class="alert">Enable JavaScript to load trade statuses.</p></noscript>
+  </main>
+  <dialog id="detail"><div class="detail-header"><div><span class="eyebrow">TRADE DETAILS</span><h2 id="detail-title"></h2></div><button id="close-detail" class="page-button" aria-label="Close trade details">✕</button></div><div id="detail-body"></div></dialog>
+</body>
+</html>

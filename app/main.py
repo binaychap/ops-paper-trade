@@ -17,11 +17,13 @@ from types import SimpleNamespace
 from typing import Any, Literal
 from enum import Enum
 import sys
+from zoneinfo import ZoneInfo
 
 from app.optionomics_client import fetch_trade_ideas
 from app.optionomics import build_trade_decision_from_optionomics_payload
 from app.webull_submitter import submit_paper_order, _is_webull_rate_limit_error as is_webull_rate_limit_error
 from app.ledger import Ledger
+from app.dashboard import router as dashboard_router
 
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -66,6 +68,11 @@ class Settings(BaseSettings):
     webull_app_key: str | None = Field(default=None, alias="WEBULL_APP_KEY")
     webull_app_secret: str | None = Field(default=None, alias="WEBULL_APP_SECRET")
     webull_endpoint: str = Field(default="api.sandbox.webull.com", alias="WEBULL_ENDPOINT")
+
+    next_day_exit_enabled: bool = Field(default=False, alias="NEXT_DAY_EXIT_ENABLED")
+    next_day_exit_time: str = Field(default="09:35", pattern=r"^(09:(3[0-9]|[45][0-9])|1[0-5]:[0-5][0-9])$", alias="NEXT_DAY_EXIT_TIME")
+    next_day_exit_timezone: Literal["America/New_York"] = Field(default="America/New_York", alias="NEXT_DAY_EXIT_TIMEZONE")
+    next_day_exit_poll_seconds: int = Field(default=30, ge=10, alias="NEXT_DAY_EXIT_POLL_SECONDS")
 
     database_path: str = Field(default="bot.sqlite3", alias="DATABASE_PATH")
 
@@ -139,6 +146,16 @@ class TradingDecision(BaseModel):
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
+
+def is_market_open_et(now: datetime | None = None) -> bool:
+    current = (now or datetime.now(UTC)).astimezone(ZoneInfo("America/New_York"))
+    if current.weekday() >= 5:
+        return False
+    market_open = current.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = current.replace(hour=16, minute=0, second=0, microsecond=0)
+    return market_open <= current < market_close
+
+
 def resolve_option_contract_symbol(
     symbol: str,
     *,
@@ -162,6 +179,7 @@ def resolve_option_contract_symbol(
 
 
 app = FastAPI(title="Optionomics Trade Ideas Trading Bot", version="1.0.0")
+app.include_router(dashboard_router)
 
 
 def poll_optionomics_trade_ideas() -> list[dict[str, Any]]:
@@ -186,15 +204,21 @@ def poll_optionomics_trade_ideas() -> list[dict[str, Any]]:
                 continue
 
             trade_id = str(trade_id if trade_id is not None else symbol or "unknown")
+            direction = str(idea.get("direction") or "").strip().lower()
+            if direction == "neutral":
+                logger.info("Ignoring neutral Optionomics trade: trade_id=%s symbol=%s", trade_id, color_symbol(symbol))
+                continue
+
             if settings.force_reprocess:
                 logger.warning("FORCE_REPROCESS=true; bypassing dedupe for Optionomics trade: trade_id=%s symbol=%s", trade_id, color_symbol(symbol))
-            elif ledger.is_trade_idea_seen(trade_id):
+
+            elif ledger.has_ordered_trade(trade_id=trade_id, symbol=symbol):
                 logger.info("Skipping already-processed Optionomics trade: trade_id=%s symbol=%s", trade_id, color_symbol(symbol))
                 continue
 
             ledger.save_trade_idea(trade_id, idea, status="queued")
             decision_data = build_trade_decision_from_optionomics_payload(idea, settings)
-            decision = TradingDecision(**decision_data)
+            decision = TradingDecision.model_validate(decision_data)
             if decision.action == "skip":
                 ledger.mark_trade_idea_status(trade_id, status="skipped", decision=decision)
                 logger.info("Skipping %s from Optionomics: %s", decision.symbol, decision.rationale)
@@ -237,7 +261,7 @@ def poll_optionomics_trade_ideas() -> list[dict[str, Any]]:
             ledger.mark_trade_idea_status(
                 trade_id,
                 status="failed",
-                decision=TradingDecision(**build_trade_decision_from_optionomics_payload(idea, settings)) if "direction" in idea else None,
+                decision=None,
             )
             if is_webull_rate_limit_error(exc):
                 logger.warning(
@@ -292,7 +316,7 @@ def maybe_submit_order(
     # The polling loop performs the duplicate check before the trade is inserted
     # into the ledger. This helper should submit the current trade without
     # falsely treating the just-inserted row as a duplicate.
-    if trade_id is not None and ledger.has_ordered_trade(trace_id=trade_id, symbol=decision.symbol):
+    if trade_id is not None and ledger.has_ordered_trade(trade_id=trade_id, symbol=decision.symbol):
         logger.info(
             "Skipping Webull submission for already-ordered trade_id=%s symbol=%s",
             trade_id,
@@ -300,7 +324,15 @@ def maybe_submit_order(
         )
         return None
 
-    order_payload = submit_paper_order(decision, settings, fingerprint_for(payload), payload)
+    if not is_market_open_et():
+        message = f"Skipping Webull submission for {decision.symbol}: market is closed outside 09:30-16:00 ET."
+        logger.info(message)
+        if trade_id is not None:
+            ledger.mark_trade_idea_status(trade_id, status="skipped", decision=decision, order_payload={"skipped": True, "reason": "outside_market_hours"})
+        return None
+
+    fingerprint = hashlib.sha256(trade_id.encode()).hexdigest() if trade_id else fingerprint_for(payload)
+    order_payload = submit_paper_order(decision, settings, fingerprint, payload)
     if trade_id is not None:
         status = "dry_run" if settings.dry_run else "ordered"
         ledger.mark_trade_idea_status(trade_id, status=status, decision=decision, order_payload=order_payload)
@@ -472,3 +504,40 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "dry_run": settings.dry_run,
     }
+
+
+@app.on_event("startup")
+def start_exit_scheduler() -> None:
+    settings = get_settings()
+    if not settings.next_day_exit_enabled or settings.dry_run:
+        return
+    from app.exit_scheduler import ExitCalendar, ExitScheduler
+    from app.stock_execution import StockExecution
+    from app.webull_broker import get_trade_client
+
+    stop = threading.Event()
+    app.state.exit_scheduler_stop = stop
+    ledger = Ledger(settings.database_path)
+    calendar = ExitCalendar(settings.next_day_exit_time, settings.next_day_exit_timezone)
+
+    def runner():
+        while not stop.is_set():
+            try:
+                if ledger.exit_jobs():
+                    scheduler = ExitScheduler(ledger, StockExecution(get_trade_client()), calendar)
+                    scheduler.run_once()
+            except Exception:
+                logger.exception("Scheduled stock exit worker failed; will retry")
+            stop.wait(settings.next_day_exit_poll_seconds)
+
+    thread = threading.Thread(target=runner, name="stock-exit-scheduler", daemon=True)
+    app.state.exit_scheduler_thread = thread
+    thread.start()
+
+
+@app.on_event("shutdown")
+def stop_exit_scheduler() -> None:
+    stop = getattr(app.state, "exit_scheduler_stop", None)
+    if stop:
+        stop.set()
+        app.state.exit_scheduler_thread.join(timeout=5)

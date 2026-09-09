@@ -59,7 +59,7 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
     stop_price = round(entry_price * 0.95, 2)
     target_price = round(entry_price * 1.10, 2)
 
-    order_result = webull_module.buy_stock(
+    order_kwargs = dict(
         account_id=account_id,
         symbol=d.get("symbol"),
         quantity=quantity,
@@ -67,6 +67,49 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
         stop_price=stop_price,
         target_price=target_price,
     )
+
+    if getattr(settings, "next_day_exit_enabled", False):
+        if d.get("action") != "buy":
+            raise ValueError("Next-day stock exits support long buy entries only")
+        from app.ledger import Ledger
+        from app.stock_execution import StockExecution
+
+        ledger = Ledger(settings.database_path)
+        if ledger.has_active_exit_job(account_id=account_id, symbol=d["symbol"]):
+            raise RuntimeError(f"Duplicate active stock exit job already exists for {d['symbol']} on account {account_id}")
+
+        with ledger.exit_worker_lock() as acquired:
+            if not acquired:
+                raise RuntimeError("Stock exit worker busy; entry not submitted")
+            broker = StockExecution(webull_module.get_trade_client())
+            if broker.position(account_id, d["symbol"]) != 0:
+                raise ValueError("Scheduled entry requires no existing stock position for this symbol")
+
+            tracked_job = None
+
+            def record_intent(tracking):
+                nonlocal tracked_job
+                job = {
+                    "id": client_order_id, "account_id": account_id,
+                    "symbol": d["symbol"], "quantity": str(quantity),
+                    **tracking, "status": "waiting_entry", "market_orders": [],
+                    "due_at": None, "last_error": None,
+                }
+                ledger.register_exit_job(job)
+                tracked_job = job
+
+            try:
+                order_result = webull_module.buy_stock(
+                    **order_kwargs, exit_time_in_force="GTC", before_submit=record_intent,
+                )
+            except Exception as exc:
+                if tracked_job is not None:
+                    tracked_job["entry_submission_error"] = str(exc)[:500]
+                    tracked_job["last_error"] = "Entry submission was not confirmed. Broker reconciliation is required."
+                    ledger.save_exit_job(tracked_job)
+                raise
+    else:
+        order_result = webull_module.buy_stock(**order_kwargs)
 
     return {
         "dry_run": False,
@@ -77,6 +120,7 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
         "side": "BUY" if d.get("action") == "buy" else "SELL",
         "notional_usd": d.get("notional_usd"),
         "broker": "webull",
+        "bracket": {key: order_result.get(key) for key in ("combo_id", "entry_id", "profit_id", "stop_id")},
     }
 
 

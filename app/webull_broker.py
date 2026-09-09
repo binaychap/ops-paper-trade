@@ -1,6 +1,7 @@
 """Shared sandbox client, account lookup, and order identifiers."""
 
 import os
+import logging
 import uuid
 from pathlib import Path
 
@@ -15,6 +16,17 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 # ============================================================
 
 _trade_client = None
+
+
+class SafeSdkLogFilter(logging.Filter):
+    def filter(self, record):
+        # The SDK embeds signed request headers in ERROR messages as well as DEBUG.
+        if record.name == 'webull.core.client' and record.levelno >= logging.ERROR:
+            record.msg = 'Webull SDK request failed; see application error for status and reason.'
+            record.args = ()
+            record.exc_info = None
+            record.exc_text = None
+        return True
 
 
 def get_trade_client():
@@ -38,7 +50,12 @@ def get_trade_client():
     )
 
     # Prevent the SDK from creating local file logs in the repository root.
-    api_client.set_stream_logger(stream=sys.stdout)
+    api_client.set_stream_logger(stream=sys.stdout, log_level=logging.INFO)
+    sdk_logger = logging.getLogger('webull.core')
+    sdk_logger.propagate = False
+    for handler in sdk_logger.handlers:
+        handler.setLevel(logging.INFO)
+        handler.addFilter(SafeSdkLogFilter())
 
     _trade_client = TradeClient(api_client)
     return _trade_client
@@ -72,5 +89,4 @@ def get_account_id():
 
 def new_id():
     return uuid.uuid4().hex[:32]
-
 

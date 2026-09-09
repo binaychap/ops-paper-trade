@@ -2,7 +2,8 @@
 
 import json
 
-from app.webull_broker import get_account_id, get_trade_client, new_id
+from app.webull_broker import get_account_id as get_account_id
+from app.webull_broker import get_trade_client, new_id
 
 
 def buy_stock(
@@ -13,7 +14,12 @@ def buy_stock(
     stop_price: float,
     target_price: float,
     trade_client=None,
+    *,
+    exit_time_in_force="DAY",
+    before_submit=None,
 ):
+    if exit_time_in_force not in {"DAY", "GTC"}:
+        raise ValueError("Invalid stock exit time in force")
     trade_client = trade_client or get_trade_client()
     symbol = symbol.upper()
     combo_id = new_id()
@@ -43,7 +49,7 @@ def buy_stock(
         "order_type": "LIMIT",
         "limit_price": f"{float(target_price):.2f}",
         "quantity": str(quantity),
-        "time_in_force": "DAY",
+        "time_in_force": exit_time_in_force,
         "support_trading_session": "CORE",
         "entrust_type": "QTY",
     }
@@ -58,12 +64,20 @@ def buy_stock(
         "order_type": "STOP_LOSS",
         "stop_price": f"{float(stop_price):.2f}",
         "quantity": str(quantity),
-        "time_in_force": "DAY",
+        "time_in_force": exit_time_in_force,
         "support_trading_session": "CORE",
         "entrust_type": "QTY",
     }
 
     new_orders = [master_order, take_profit_order, stop_loss_order]
+    tracking = {
+        "combo_id": combo_id,
+        "entry_id": master_order["client_order_id"],
+        "profit_id": take_profit_order["client_order_id"],
+        "stop_id": stop_loss_order["client_order_id"],
+    }
+    if before_submit is not None:
+        before_submit(tracking)
     response = trade_client.order_v3.place_order(account_id, new_orders, client_combo_order_id=combo_id)
     if response.status_code != 200:
         raise RuntimeError(f"Stock order failed: {response.status_code} {response.text}")
@@ -72,6 +86,5 @@ def buy_stock(
     print("\nStock bracket combo submitted successfully:")
     print(json.dumps({"client_combo_order_id": combo_id, "new_orders": new_orders}, indent=2))
     print(json.dumps(result, indent=2))
-    return result
-
+    return {**result, **tracking}
 

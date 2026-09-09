@@ -78,6 +78,122 @@ Health check:
 curl http://127.0.0.1:8000/health
 ```
 
+### Run test
+
+```
+cd /Users/binayrai/github/ops-paper-trade && PYTHONPATH=. .venv/bin/python -m pytest tests/test_exit_scheduler.py -q
+```
+
+## Trade status dashboard
+
+Open **http://127.0.0.1:8000/** while the FastAPI service is running. The page
+shows trade-idea status and scheduled exit status side by side, with symbol/ID
+search, status filters, an attention filter, pagination, and optional refresh
+every 15 seconds. Select **View** for recorded fills, broker order references,
+next-day deadline, decision rationale, and the latest reconciliation error.
+All displayed timestamps use New York time.
+
+The dashboard reads the existing SQLite ledger through `GET /api/trades` and
+never places orders or queries the broker. It does not create a database when
+none exists. An `ordered` idea is not proof of an open position; `complete`
+means the tracked exit workflow finished, including cancelled unfilled entries.
+Untracked trades show no inferred broker fill status. Standalone exit jobs
+remain visible even without a corresponding trade-idea row.
+
+The page is served by the same local FastAPI app; it has no separate frontend
+build or hosted copy of your ledger. Treat the app as a local tool: these routes
+do not add authentication. To preview the dashboard without starting either
+trading worker, run:
+
+```bash
+PYTHONPATH=. uv run uvicorn app.main:app --host 127.0.0.1 --port 8001 --lifespan off
+```
+
+Then open http://127.0.0.1:8001/. The scheduler badge represents configuration,
+not proof that a worker is running; this preview command disables startup hooks.
+
+## Scheduled next-trading-day stock exits
+
+The optional scheduler exits tracked long stock trades at market on the next
+NYSE trading session after an entry fill, defaulting to **9:35 AM New York time**.
+It sells regardless of profit or loss. It handles weekends, exchange holidays,
+DST, and early closes through `exchange-calendars` (`XNYS`). A missed exit is
+processed during the next available regular session while the app is running.
+The poll interval means execution is not guaranteed at the exact scheduled second.
+
+```env
+NEXT_DAY_EXIT_ENABLED=false
+NEXT_DAY_EXIT_TIME=09:35
+NEXT_DAY_EXIT_TIMEZONE=America/New_York
+NEXT_DAY_EXIT_POLL_SECONDS=30
+```
+
+The feature is disabled by default. `DRY_RUN=true` prevents both scheduler
+startup and broker submissions. After sandbox validation, set
+`NEXT_DAY_EXIT_ENABLED=true` and `DRY_RUN=false` and restart the service to use it.
+The worker runs independently of Optionomics feed polling. No `.env` values
+were changed when this feature was added.
+
+When enabled, new stock brackets retain `DAY` for the entry and use `GTC` for
+both exit legs. The stop remains 5% below entry and the target 10% above entry.
+Bracket IDs are stored **before** submission in `scheduled_stock_exits`; the
+actual broker fill timestamp determines the scheduled date. Unfilled entries
+have no exit deadline. Only newly tracked orders are managed; existing ledger
+rows and positions are not automatically adopted.
+
+Before the scheduled market sale, the worker cancels any entry remainder and
+outstanding bracket exits, queries their final statuses, and subtracts all
+confirmed bracket and earlier market-exit fills from the entry quantity. It
+checks the current stock position and submits only the tracked remainder as a
+normal `SELL / MARKET / DAY / CORE` order. A bracket that already closed the
+trade completes the job without another sale. Partial market fills remain under
+observation; a replacement for the remainder is possible only after the prior
+order is confirmed terminal.
+
+A persistent market-order ID is committed before each submission. If a request
+times out, the worker looks up that ID on restart instead of blindly resubmitting.
+The specific Webull “Order not present” error backs off lookups from 60 seconds
+to 15 minutes; the dashboard shows the next lookup time and, for new submission
+failures, the original submission error. Missing orders are not assumed cancelled.
+Unknown or malformed responses, decreasing fill counts, unconfirmed cancellations,
+and position mismatches defer the exit and record `last_error`. An ambiguous
+submission that never becomes queryable requires manual broker reconciliation;
+it is not automatically assumed absent. Cancellation may already have removed
+protection while such an error is unresolved.
+
+There is one active scheduled trade per account/symbol. New scheduled entries
+require no existing stock position for that symbol. The bot caps exits at its
+tracked fills, but manual trading or corporate actions can invalidate ownership
+accounting; use a dedicated paper account for this workflow. Worker and entry
+submission exclusion uses a POSIX file lock beside SQLite, supporting processes
+on a single host with the same local database, not distributed deployments.
+
+Inspect state without modifying it:
+
+```sql
+SELECT id, symbol, status,
+       json_extract(state_json, '$.due_at') AS due_at,
+       json_extract(state_json, '$.remaining_quantity') AS remaining_quantity,
+       json_extract(state_json, '$.last_error') AS last_error
+FROM scheduled_stock_exits
+ORDER BY updated_at DESC;
+```
+
+For unresolved submissions, inspect the saved entry/exit client IDs and broker
+order history before making any manual correction. Do not delete a job or clear
+its market-order attempts to force a retry: that removes duplicate-sale protection.
+
+Implementation: `app/exit_scheduler.py` (calendar and reconciliation),
+`app/stock_execution.py` (strict Webull adapter), and `app/ledger.py` (persistent
+jobs). Fake-broker tests cover recovery and cancellation races; actual sandbox
+acceptance of GTC bracket exits and account-specific response shapes still needs
+verification before enabling the worker.
+
+API references: [stock orders](https://developer.webull.com/apis/docs/trade-api/stock/),
+[order detail](https://developer.webull.com/apis/docs/reference/order-detail/),
+[cancellation](https://developer.webull.com/apis/docs/reference/common-order-cancel/),
+and [positions](https://developer.webull.com/apis/docs/reference/account-position/).
+
 ## How main.py works
 
 The runtime flow in [app/main.py](app/main.py) is split into a few clear stages.
@@ -293,4 +409,10 @@ SELECT trade_id, symbol, status, decision_json FROM optionomics_trade_ideas ORDE
 
 ```bash
 sqlite3 bot.sqlite3 ".schema optionomics_trade_ideas"
+```
+
+### removed sql command
+
+```
+rm -f bot.sqlite3 bot.sqlite3.exits.lock bot.sqlite3.write.lock && ls -1 bot.sqlite3* 2>/dev/null || true
 ```

@@ -7,3 +7,5 @@ bot.sqlite3
 logs/
 .vscode/
 .env.example
+
+*.sqlite3.exits.lock

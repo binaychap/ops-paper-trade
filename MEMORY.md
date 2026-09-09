@@ -1,7 +1,7 @@
 # Ops Paper Trade — project memory
 
-Last reviewed: 2026-09-05. Based on repository source inspection; commands and
-runtime behavior were not tested during this documentation update.
+Last reviewed: 2026-09-05. Scheduler implementation is covered by local fake-broker
+tests; live sandbox execution has not been validated.
 
 ## Purpose and stack
 
@@ -20,7 +20,10 @@ the Webull OpenAPI Python SDK. Development dependencies: pytest and Ruff.
 - `app/optionomics_client.py`: HTTP feed retrieval and environment loading.
 - `app/optionomics.py`: feed model, confidence normalization, directional
   level validation, and decision builder returning dictionaries.
-- `app/ledger.py`: SQLite schema, deduplication, status and audit persistence.
+- `app/ledger.py`: SQLite schema, deduplication, status and audit persistence,
+  scheduled exit jobs, and single-host worker exclusion.
+- `app/exit_scheduler.py`: next-session calendar and persistent exit reconciliation.
+- `app/stock_execution.py`: strict order/position queries, cancellation, and market sells.
 - `app/webull_submitter.py`: dry-run response and broker submission adapter.
 - `app/webull-buy-combo-stock.py`: dynamically loaded equity bracket helper
   used by `webull_submitter.py`.
@@ -117,12 +120,6 @@ These are observations from static source review, not fixes or a test report:
   alone does not establish the broker's actual order direction.
 - The rate-limit log promises a retry on the next poll, but failed rows are
   still considered seen by the initial dedupe check under default settings.
-- `app.main` wraps the feed builder to return TradingDecision, while the
-  polling loop subsequently attempts `TradingDecision(**decision_data)`.
-  Verify this model/dictionary boundary when debugging polling failures.
-- Ledger serialization uses `json.dumps` directly on decisions, while main
-  passes Pydantic models in several paths. Verify serialization before
-  assuming those status writes succeed.
 - Stock submission loads its helper directly through
   `app.webull_submitter._load_webull_stock_module`; tests patch that loader.
   The former recursive compatibility hook through `app.main` was removed.
@@ -137,3 +134,81 @@ to create this memory.
 Keep this file focused on durable project facts and unresolved findings.
 Update or remove findings after verification or fixes, recording relevant
 validation without retaining a running transcript of every session.
+
+## Scheduled stock exit implementation
+
+User approved next-trading-day market exits. `NEXT_DAY_EXIT_ENABLED` defaults
+false; `NEXT_DAY_EXIT_TIME=09:35`, `NEXT_DAY_EXIT_TIMEZONE=America/New_York`, and
+`NEXT_DAY_EXIT_POLL_SECONDS=30`. `DRY_RUN=true` suppresses the worker and all
+submission. Local `.env` values were preserved. See README for the runbook.
+
+Uses `exchange-calendars` XNYS sessions and actual entry fill timestamps. The
+worker persists bracket IDs before entry submission, derives a deadline after
+confirmed fills, cancels outstanding entry/exit orders, confirms terminal states,
+reconciles fills and holdings, and sells the tracked remainder at market. GTC
+exit legs are requested only when scheduling is enabled; entry remains DAY.
+No profit condition is imposed on the scheduled exit.
+
+`ExitCalendar()` resolves omitted time/timezone arguments through `get_settings()`,
+using `NEXT_DAY_EXIT_TIME` and `NEXT_DAY_EXIT_TIMEZONE` from `.env` or process
+environment. Explicit constructor arguments override those configured values.
+
+Jobs live in `scheduled_stock_exits`; state JSON retains IDs, deadline, quantities,
+order snapshots, market attempts, and last error. One active job per account/symbol
+is enforced by SQLite. A POSIX file lock beside the database excludes concurrent
+entry submission and scheduler workers and releases on process death. Single-host
+local SQLite is required. Existing positions/trades are not adopted automatically.
+
+Scheduled entries require a flat stock position for the symbol. Unknown submission
+results are reconciled by persisted client ID, never blindly replayed; if the ID
+never becomes queryable, manual reconciliation is required. Confirmed terminal
+partial exits can create a new market order for the remainder. Malformed or stale
+responses and position shortfalls defer execution. Manual trades/corporate actions
+can invalidate tracked ownership; use a dedicated paper account.
+
+The polling model/dictionary boundary and Pydantic ledger serialization were fixed
+as prerequisites. Submission fingerprints now use a stable trade-ID hash when
+available. Scheduler tests use temporary databases and fake broker clients. Actual
+sandbox GTC acceptance and response fields remain unverified; keep the scheduler
+disabled until checked. No broker orders were placed during implementation.
+
+## Trade status dashboard
+
+`app/dashboard.py` serves a read-only dashboard at `/`, static CSS/JS from
+`app/static/`, and a no-cache ledger snapshot at `/api/trades`. No frontend build
+is required. The page has search/status/attention filters, 20-row pagination,
+15-second optional refresh, and a details dialog. Trade-idea status and exit job
+status remain distinct. Times display in New York time.
+
+The snapshot reads SQLite in read-only mode in one transaction. It handles an
+absent ledger or older schema without scheduler tables without initializing the
+database. Jobs link by bracket entry ID or the stable trade-ID hash; never by
+symbol alone. Unlinked jobs remain visible. Only selected fields are returned;
+account IDs and raw feed payloads are omitted. The page shows saved observations,
+not live broker state. Completed jobs can include unfilled cancelled entries.
+
+Dashboard routes have no authentication; use the existing app locally. A UI-only
+preview can use `uvicorn app.main:app --host 127.0.0.1 --port 8001 --lifespan off`
+without starting trading workers. Configuration badges do not prove a worker is
+running. Tests cover status pairing, orphan jobs, old/missing/corrupt databases,
+read-only access, and withholding account/raw payload fields.
+
+## Unconfirmed entry lookup handling (2026-09-07)
+
+A pasted SDK HTTP 417 `OPENAPI_PARAM_ERR / Order not present` referred to a saved
+master BUY. Read-only ledger inspection found a failed idea, a waiting_entry job,
+no broker receipt, no recorded fill, and no scheduled exit date. The original
+submission failure reason was not retained, so this does not establish whether
+Webull rejected the entry or the submission result was otherwise ambiguous.
+
+`StockExecution` now recognizes this specific missing-order error from either SDK
+exceptions or HTTP responses. The scheduler preserves the unresolved job, performs
+no new sale, and backs off lookups from 60 seconds to a maximum 15 minutes with a
+persisted next_check_at. Successful reconciliation clears the backoff. Missing
+orders are never treated as cancelled, unfilled, or complete. Future entry
+submission exceptions are retained on the exit job for troubleshooting; the UI
+shows that error and the next lookup time. No existing jobs were edited or deleted.
+
+Shared SDK logging now uses INFO, disables propagation to the root logger, and
+replaces core client ERROR dumps (which can contain signed request headers) with
+a short message. Application errors retain the actionable reason.

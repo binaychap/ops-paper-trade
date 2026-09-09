@@ -1,6 +1,7 @@
 import logging
 from types import SimpleNamespace
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -125,6 +126,16 @@ def test_sell_short_disabled_skip():
     assert any("Short selling is disabled" in note for note in gated.risk_notes) or "Short selling is disabled" in gated.rationale
 
 
+def test_market_open_et_window():
+    from app.main import is_market_open_et
+
+    assert is_market_open_et(datetime(2026, 9, 9, 9, 30, tzinfo=ZoneInfo("America/New_York"))) is True
+    assert is_market_open_et(datetime(2026, 9, 9, 15, 59, tzinfo=ZoneInfo("America/New_York"))) is True
+    assert is_market_open_et(datetime(2026, 9, 9, 16, 0, tzinfo=ZoneInfo("America/New_York"))) is False
+    assert is_market_open_et(datetime(2026, 9, 9, 9, 29, tzinfo=ZoneInfo("America/New_York"))) is False
+    assert is_market_open_et(datetime(2026, 9, 12, 13, 0, tzinfo=ZoneInfo("America/New_York"))) is False
+
+
 def test_build_trade_decision_bullish_executes_buy():
     payload = make_payload(symbol="AAPL", direction="bullish")
     settings = SimpleNamespace(max_notional_usd=200.0, allow_short_selling=False)
@@ -206,7 +217,29 @@ def test_optionomics_symbol_mismatch_is_rejected_before_execution():
     assert validate_optionomics_symbol_match(idea, decision) is False
 
 
-def test_optionomics_neutral_crush_payload_is_valid_iron_condor():
+def test_optionomics_neutral_payload_is_ignored():
+    payload = {
+        "id": "idea-neutral-ignore",
+        "symbol": "ULTA",
+        "direction": "neutral",
+        "strategy": "iron_condor",
+        "pipeline_short_name": "Momentum",
+        "pipeline_name": "Momentum setups",
+        "levels": {"entry": 543.19, "target": 459.44, "stop": 626.94, "current": 530.63, "peak": 543.19},
+        "generated_at": "2026-08-27T11:00:00.687140Z",
+        "confidence_score": 0.88,
+    }
+    settings = SimpleNamespace(max_notional_usd=250.0, allow_short_selling=False)
+
+    from app.main import build_trade_decision_from_optionomics_payload
+
+    decision = build_trade_decision_from_optionomics_payload(payload, settings)
+
+    assert decision.action == "skip"
+    assert "neutral" in decision.rationale.lower()
+
+
+def test_optionomics_neutral_crush_payload_is_ignored():
     payload = {
         "id": "idea-neutral-crush",
         "symbol": "ULTA",
@@ -224,10 +257,9 @@ def test_optionomics_neutral_crush_payload_is_valid_iron_condor():
 
     decision = build_trade_decision_from_optionomics_payload(payload, settings)
 
-    assert decision.action == "buy"
-    assert decision.strategy == "iron_condor"
-    assert decision.notional_usd == 250.0
-    assert "Crush" in decision.rationale
+    assert decision.action == "skip"
+    assert decision.notional_usd == 0.0
+    assert "neutral" in decision.rationale.lower()
 
 
 def test_optionomics_bearish_direction_checks_its_range():
@@ -330,9 +362,9 @@ def test_ordered_trade_id_and_symbol_are_not_resubmitted(tmp_path):
     }
 
     ledger.save_trade_idea("trace-abc-123", idea, status="ordered")
-    assert ledger.has_ordered_trade(trace_id="trace-abc-123", symbol="BHP") is True
-    assert ledger.has_ordered_trade(trace_id="trace-abc-123", symbol="AAPL") is False
-    assert ledger.has_ordered_trade(trace_id="trace-other", symbol="BHP") is False
+    assert ledger.has_ordered_trade(trade_id="trace-abc-123", symbol="BHP") is True
+    assert ledger.has_ordered_trade(trade_id="trace-abc-123", symbol="AAPL") is False
+    assert ledger.has_ordered_trade(trade_id="trace-other", symbol="BHP") is False
 
 
 def test_build_option_order_request_prefers_contract_symbol(monkeypatch):
