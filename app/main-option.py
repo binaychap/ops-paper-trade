@@ -174,6 +174,15 @@ def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def is_market_open_et(now: datetime | None = None) -> bool:
+    current = (now or datetime.now(UTC)).astimezone(ZoneInfo("America/New_York"))
+    if current.weekday() >= 5:
+        return False
+    market_open = current.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = current.replace(hour=16, minute=0, second=0, microsecond=0)
+    return market_open <= current < market_close
+
+
 def _coerce_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -692,7 +701,10 @@ def start_optionomics_polling() -> None:
     def runner() -> None:
         while True:
             try:
-                poll_optionomics_trade_ideas()
+                if is_market_open_et():
+                    poll_optionomics_trade_ideas()
+                else:
+                    logger.info("Skipping Optionomics poll; market closed (ET)")
             except Exception:
                 logger.exception("Polling loop crashed")
             time.sleep(interval_seconds)

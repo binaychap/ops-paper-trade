@@ -291,7 +291,10 @@ def start_optionomics_polling() -> None:
     def runner() -> None:
         while True:
             try:
-                poll_optionomics_trade_ideas()
+                if is_market_open_et():
+                    poll_optionomics_trade_ideas()
+                else:
+                    logger.info("Skipping Optionomics poll; market closed (ET)")
             except Exception:
                 logger.exception("Polling loop crashed")
             time.sleep(interval_seconds)
