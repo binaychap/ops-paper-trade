@@ -82,6 +82,7 @@ class OrderType(Enum):
 
 class TimeInForce(Enum):
     DAY = "DAY"
+    GTC = "GTC"
 
 
 class OrderClass(Enum):
@@ -508,7 +509,7 @@ class Ledger:
     def is_trade_idea_seen(self, trade_id: str) -> bool:
         with closing(sqlite3.connect(self.path, timeout=10)) as conn:
             row = conn.execute(
-                "SELECT 1 FROM optionomics_trade_ideas WHERE trade_id = ? LIMIT 1",
+                "SELECT 1 FROM optionomics_trade_ideas WHERE trade_id = ? and status = 'ordered'",
                 (trade_id,),
             ).fetchone()
         return row is not None
@@ -1084,16 +1085,31 @@ def submit_paper_order(
     entry_limit = max(float(selected_strike) * 0.08, 1.0)
     quantity = 1
 
-    order_result = webull_module.buy_call_with_bracket(
-        account_id=account_id,
-        symbol=decision.symbol,
-        strike=selected_strike,
-        expiration=selected_expiration,
-        quantity=quantity,
-        entry_limit=entry_limit,
-        profit_percent=10,
-        stop_loss_percent=5,
-    )
+    if decision.action == "buy":
+        order_result = webull_module.buy_call_with_bracket(
+            account_id=account_id,
+            symbol=decision.symbol,
+            strike=selected_strike,
+            expiration=selected_expiration,
+            quantity=quantity,
+            entry_limit=entry_limit,
+            profit_percent=10,
+            stop_loss_percent=5,
+        )
+    else:
+        from app.bearish_option_executor import BearishPutOptionExecutor
+
+        executor = BearishPutOptionExecutor(module=webull_module)
+        order_result = executor.submit(
+            account_id=account_id,
+            symbol=decision.symbol,
+            strike=selected_strike,
+            expiration=selected_expiration,
+            quantity=quantity,
+            entry_limit=entry_limit,
+            profit_percent=10,
+            stop_loss_percent=5,
+        )
 
     logger.info(
         "Webull combo order submitted successfully: symbol=%s side=%s notional_usd=%s order_id=%s",

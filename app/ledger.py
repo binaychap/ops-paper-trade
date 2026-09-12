@@ -161,12 +161,23 @@ class Ledger:
                 )
                 conn.commit()
 
-    def is_trade_idea_seen(self, trade_id: str) -> bool:
-        with closing(sqlite3.connect(self.path, timeout=10)) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM optionomics_trade_ideas WHERE trade_id = ? LIMIT 1",
-                (trade_id,),
-            ).fetchone()
+    def is_trade_idea_seen(self, trade_id: str, status: str | None = None) -> bool:
+        """Return True if a trade idea with `trade_id` exists.
+
+        If `status` is provided, restrict the check to rows with that status.
+        """
+        if status is None:
+            with closing(sqlite3.connect(self.path, timeout=10)) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM optionomics_trade_ideas WHERE trade_id = ? LIMIT 1",
+                    (trade_id,),
+                ).fetchone()
+        else:
+            with closing(sqlite3.connect(self.path, timeout=10)) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM optionomics_trade_ideas WHERE status = ? AND trade_id = ? LIMIT 1",
+                    (status, trade_id),
+                ).fetchone()
         return row is not None
 
     def has_trade_or_symbol_seen(self, *, trade_id: str | None = None, symbol: str | None = None) -> bool:

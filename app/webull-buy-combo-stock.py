@@ -10,7 +10,7 @@ def buy_stock(
     account_id: str,
     symbol: str,
     quantity: int,
-    entry_price: float,
+    entry_price: float | None,
     stop_price: float,
     target_price: float,
     trade_client=None,
@@ -24,6 +24,7 @@ def buy_stock(
     symbol = symbol.upper()
     combo_id = new_id()
 
+    # If `entry_price` is None then submit a market entry order, otherwise use a limit.
     master_order = {
         "client_order_id": new_id(),
         "combo_type": "MASTER",
@@ -31,13 +32,14 @@ def buy_stock(
         "instrument_type": "EQUITY",
         "market": "US",
         "side": "BUY",
-        "order_type": "LIMIT",
-        "limit_price": f"{float(entry_price):.2f}",
+        "order_type": "MARKET" if entry_price is None else "LIMIT",
         "quantity": str(quantity),
         "time_in_force": "DAY",
         "support_trading_session": "CORE",
         "entrust_type": "QTY",
     }
+    if entry_price is not None:
+        master_order["limit_price"] = f"{float(entry_price):.2f}"
 
     take_profit_order = {
         "client_order_id": new_id(),

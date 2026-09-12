@@ -90,6 +90,7 @@ class OrderType(Enum):
 
 class TimeInForce(Enum):
     DAY = "DAY"
+    GTC = "GTC"
 
 
 class OrderClass(Enum):
@@ -206,8 +207,7 @@ def poll_optionomics_trade_ideas() -> list[dict[str, Any]]:
             trade_id = str(trade_id if trade_id is not None else symbol or "unknown")
             direction = str(idea.get("direction") or "").strip().lower()
             if direction == "neutral":
-                logger.info("Ignoring neutral Optionomics trade: trade_id=%s symbol=%s", trade_id, color_symbol(symbol))
-                continue
+                logger.info("Optionomics neutral idea detected: trade_id=%s symbol=%s", trade_id, color_symbol(symbol))
 
             if settings.force_reprocess:
                 logger.warning("FORCE_REPROCESS=true; bypassing dedupe for Optionomics trade: trade_id=%s symbol=%s", trade_id, color_symbol(symbol))
@@ -333,6 +333,12 @@ def maybe_submit_order(
 
     fingerprint = hashlib.sha256(trade_id.encode()).hexdigest() if trade_id else fingerprint_for(payload)
     order_payload = submit_paper_order(decision, settings, fingerprint, payload)
+    # If the submitter returned an explicit skip marker, mark skipped and return None.
+    if isinstance(order_payload, dict) and order_payload.get("skipped"):
+        if trade_id is not None:
+            ledger.mark_trade_idea_status(trade_id, status="skipped", decision=decision, order_payload=order_payload)
+        return None
+
     if trade_id is not None:
         status = "dry_run" if settings.dry_run else "ordered"
         ledger.mark_trade_idea_status(trade_id, status=status, decision=decision, order_payload=order_payload)

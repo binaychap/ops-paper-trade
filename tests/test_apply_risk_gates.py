@@ -285,6 +285,16 @@ def test_optionomics_bearish_direction_checks_its_range():
     assert decision.notional_usd == 250.0
 
 
+def test_bearish_put_executor_uses_put_bracket_builder():
+    from app.bearish_option_executor import BearishPutOptionExecutor
+
+    executor = BearishPutOptionExecutor()
+
+    assert executor.order_builder_name() == "buy_put_with_bracket"
+    assert executor.option_type() == "PUT"
+    assert executor.strategy_label() == "sell_next_way"
+
+
 def test_optionomics_placeholder_pipeline_is_not_executed():
     payload = {
         "id": "idea-2",
@@ -439,6 +449,56 @@ def test_submit_paper_order_calculates_stop_and_target_from_entry(monkeypatch):
     assert captured["entry_price"] == 100.0
     assert captured["stop_price"] == 95.0
     assert captured["target_price"] == 110.0
+
+
+def test_submit_paper_order_routes_bearish_decisions_to_put_executor(monkeypatch):
+    from app.main import Settings, TradingDecision
+    from app import webull_submitter
+
+    captured = {}
+
+    class FakeBrokerModule:
+        @staticmethod
+        def get_account_id():
+            return "acct-option-1"
+
+    class FakeExecutor:
+        @staticmethod
+        def option_type():
+            return "PUT"
+
+        @staticmethod
+        def strategy_label():
+            return "sell_next_way"
+
+        def __init__(self, module):
+            captured["module"] = module
+
+        def submit(self, **kwargs):
+            captured["submit_kwargs"] = kwargs
+            return {"client_order_id": "put-ok"}
+
+    decision = TradingDecision(
+        action="sell_short",
+        symbol="AAPL",
+        strategy="placeholder",
+        notional_usd=250.0,
+        confidence=0.9,
+        rationale="bearish",
+        risk_notes=[],
+    )
+    settings = Settings(DRY_RUN=False)
+    payload = SimpleNamespace(entry_price=100.0, target_price=90.0, stop_price=105.0)
+
+    monkeypatch.setattr(webull_submitter, "_load_webull_option_module", lambda: FakeBrokerModule())
+    monkeypatch.setattr("app.bearish_option_executor.BearishPutOptionExecutor", FakeExecutor)
+
+    result = webull_submitter.submit_paper_order(decision, settings, "fingerprint-1234567890abcd", payload)
+
+    assert result["broker"] == "webull"
+    assert result["side"] == "SELL"
+    assert captured["submit_kwargs"]["symbol"] == "AAPL"
+    assert captured["submit_kwargs"]["entry_limit"] > 0
 
 
 def test_buy_stock_submits_combo_bracket_order(monkeypatch):
