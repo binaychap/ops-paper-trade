@@ -614,7 +614,7 @@ def poll_optionomics_trade_ideas() -> list[dict[str, Any]]:
     settings = get_settings()
     email = os.getenv("OPTIONOMICS_EMAIL") or "you@example.com"
     try:
-        ideas = fetch_trade_ideas(email, timeout=30)
+        ideas = fetch_trade_ideas(email, api_url=settings.optionomics_api_url, timeout=30)
     except RuntimeError as exc:
         logger.exception("Unable to fetch Optionomics trade ideas: %s", exc)
         return []

@@ -16,6 +16,8 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 # ============================================================
 
 _trade_client = None
+_api_client = None
+_data_client = None
 
 
 class SafeSdkLogFilter(logging.Filter):
@@ -29,11 +31,11 @@ class SafeSdkLogFilter(logging.Filter):
         return True
 
 
-def get_trade_client():
-    global _trade_client
+def get_api_client():
+    global _api_client
 
-    if _trade_client is not None:
-        return _trade_client
+    if _api_client is not None:
+        return _api_client
 
     app_key = os.environ["WEBULL_APP_KEY"]
     app_secret = os.environ["WEBULL_APP_SECRET"]
@@ -57,8 +59,24 @@ def get_trade_client():
         handler.setLevel(logging.INFO)
         handler.addFilter(SafeSdkLogFilter())
 
-    _trade_client = TradeClient(api_client)
+    _api_client = api_client
+    return _api_client
+
+
+def get_trade_client():
+    global _trade_client
+    if _trade_client is None:
+        _trade_client = TradeClient(get_api_client())
     return _trade_client
+
+
+def get_data_client():
+    from webull.data.data_client import DataClient
+
+    global _data_client
+    if _data_client is None:
+        _data_client = DataClient(get_api_client())
+    return _data_client
 
 
 # ============================================================

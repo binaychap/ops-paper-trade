@@ -64,6 +64,9 @@ DATABASE_PATH=bot.sqlite3
 ```bash
 uv sync
 PYTHONPATH=. uv run fastapi dev app/main.py
+
+ DRY_RUN=true DATABASE_PATH=/tmp/bullish-preview.sqlite3 uv run python app/main-top-bullish.py
+
 ```
 
 Or run the application directly with the repo on the Python path:
@@ -416,3 +419,29 @@ sqlite3 bot.sqlite3 ".schema optionomics_trade_ideas"
 ```
 rm -f bot.sqlite3 bot.sqlite3.exits.lock bot.sqlite3.write.lock && ls -1 bot.sqlite3* 2>/dev/null || true
 ```
+
+### Top bullish flow stock brackets
+
+Run the standalone `MainTopBullish` runner to fetch up to 10 bullish-flow symbols,
+request current Webull stock snapshots, and prepare one-share limit brackets:
+
+```bash
+DRY_RUN=true DATABASE_PATH=/tmp/bullish-preview.sqlite3 uv run python app/main-top-bullish.py --limit 10
+```
+
+Requires `OPTIONOMICS_EMAIL`, `OPTIONOMICS_API_KEY`, `WEBULL_APP_KEY`, and
+`WEBULL_APP_SECRET` in the environment or `.env`, plus access to Webull snapshot
+data. Quotes older than five minutes are skipped, including old quotes outside
+market hours. Entry is the quoted stock price, stop is 5% below entry, and target
+is 10% above entry. One share must fit `MAX_NOTIONAL_USD` (default $250).
+
+To enable sandbox orders, use `DRY_RUN=false` with your intended `DATABASE_PATH`.
+The runner calls `webull-buy-combo-stock.py`; exits use DAY time in force and the
+runner does not start the next-day exit scheduler. It runs once and exits.
+
+The `top_bullish_trades` table is created automatically. It records the flow,
+quote, order parameters, broker IDs/response, timestamps and submission status.
+A trade ID or symbol already in this table is always skipped, even after a dry
+run or failure. Use a separate preview database as above. Deduplication applies
+to this runner's table, not other strategies or broker holdings. Ambiguous
+submission failures are retained as `submission_unknown` for manual review.

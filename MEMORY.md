@@ -17,7 +17,19 @@ the Webull OpenAPI Python SDK. Development dependencies: pytest and Ruff.
 
 - `app/main.py`: FastAPI app, Settings, TradeIdea/TradingDecision models,
   polling thread, orchestration, risk helpers, and compatibility wrappers.
-- `app/optionomics_client.py`: HTTP feed retrieval and environment loading.
+- `app/optionomics_client.py`: generic `fetch_json(api_url, user_email, api_key)`
+  HTTP retrieval and environment loading. `fetch_trade_ideas` requires a caller-
+  supplied `api_url` keyword and retains trade-idea response normalization.
+  Both polling entry points pass `settings.optionomics_api_url`; `TopBullish`
+  passes its flow URL to `fetch_json`. Successful 403 retries no longer raise
+  the previous attempt's error; covered by mocked HTTP tests.
+- `app/top-bullish.py`: standalone `TopBullish` client for `/api/v1/flow/bullish`.
+  Run `uv run python app/top-bullish.py`; reads `OPTIONOMICS_EMAIL` and
+  `OPTIONOMICS_API_KEY` from environment or `.env`, defaults to limit 10,
+  and prints the original JSON response. Does not start trading workers.
+  Reuses `optionomics_client.build_headers`: verified the bullish endpoint
+  returns Cloudflare 1010/HTTP 403 with urllib's default user agent and HTTP 200
+  with the existing client's browser headers (2026-09-13). Credentials are not logged.
 - `app/optionomics.py`: feed model, confidence normalization, directional
   level validation, and decision builder returning dictionaries.
 - `app/ledger.py`: SQLite schema, deduplication, status and audit persistence,
@@ -212,3 +224,46 @@ shows that error and the next lookup time. No existing jobs were edited or delet
 Shared SDK logging now uses INFO, disables propagation to the root logger, and
 replaces core client ERROR dumps (which can contain signed request headers) with
 a short message. Application errors retain the actionable reason.
+
+## Bullish flow stock runner
+
+`app/main-top-bullish.py` provides `MainTopBullish.run(limit=10)`, a one-shot
+runner loading `TopBullish` from `app/top-bullish.py` and calling the existing
+`webull-buy-combo-stock.py` helper. Each feed entry uses a Webull snapshot price
+for a one-share LIMIT entry, a 5% stop and 10% target (two decimal places), with
+DAY exits. Entries above `MAX_NOTIONAL_USD` are skipped. It does not start the
+existing polling service or next-day exit worker.
+
+`app/webull_quotes.py` uses the installed SDK's `DataClient.market_data.get_snapshot`
+and validates symbol, positive finite price, and `last_trade_time` (milliseconds);
+quotes older than five minutes or over five seconds in the future are rejected.
+`webull_broker.py` shares a cached signed sandbox API client between trade/data
+clients. Live quote permissions and sandbox snapshot behavior remain unverified.
+
+`BullishLedger` creates `top_bullish_trades` in `DATABASE_PATH` on initialization.
+It stores feed metrics/payload, quote, order parameters, status, broker tracking
+IDs/response, exception type and timestamps. Atomic unique trade-ID and symbol
+claims precede broker calls; tracking IDs are persisted through `before_submit`.
+Feed entries without an ID use `bullish:SYMBOL`. Deduplication is permanent within
+this table, including dry runs, failed attempts and unknown submissions; it does
+not check other strategies' tables or current broker positions. Quote/budget
+skips are returned without reserving a symbol, allowing later valid attempts.
+Unknown submissions require manual reconciliation and are never auto-retried.
+
+Bullish runner logs quote/order failures with symbol and SDK HTTP status, error
+code and message, also included in final JSON. `app/webull_errors.py` formats
+only selected SDK exception fields and redacts configured secrets; raw SDK
+request logging remains suppressed. Unexpected exceptions retain type-only
+reporting. Non-200 quote responses expose selected error fields as well.
+
+Preview with `DRY_RUN=true DATABASE_PATH=/tmp/bullish-preview.sqlite3 uv run python
+app/main-top-bullish.py --limit 10`. The preview uses real feed/quote requests but
+never submits orders; a separate database avoids reserving production symbols.
+`DRY_RUN=false` enables sandbox submission. Verified with temporary databases and
+mocked feed/quote/broker calls: full suite 84 passed; no broker orders placed.
+
+SE read-only sandbox snapshot check on 2026-09-13 returned a quote about 38 hours
+old, rejected by the five-minute freshness limit. `QuoteError` now exposes safe
+validation details (including age/limit) in runner skip reasons; unexpected SDK
+exceptions still show only their type. No freshness limit was relaxed or order
+submitted during diagnosis.
