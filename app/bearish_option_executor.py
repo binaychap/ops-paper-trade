@@ -42,9 +42,9 @@ class BearishPutOptionExecutor:
         strike: float,
         expiration: str,
         quantity: int,
-        entry_limit: float,
-        profit_percent: float = 10,
-        stop_loss_percent: float = 5,
+        entry_limit: float | None = None,
+        profit_percent: float = 20,
+        stop_loss_percent: float = 10,
     ) -> dict[str, Any]:
         builder = getattr(self.module, self.order_builder_name())
         return builder(

@@ -8,6 +8,41 @@ class QuoteError(ValueError):
     """Safe, actionable quote failure suitable for display to the caller."""
 
 
+def current_option_ask(symbol, *, data_client=None, now=None, max_age_seconds=60):
+    """Return a fresh ask for the exact broker-selected option contract."""
+    if not isinstance(symbol, str) or not symbol:
+        raise QuoteError('Missing option contract symbol')
+    if data_client is None:
+        from app.webull_broker import get_data_client
+        data_client = get_data_client()
+    response = data_client.option_market_data.get_option_snapshot(symbol, 'US_OPTION')
+    if response.status_code != 200:
+        raise QuoteError(f'Option snapshot request failed (HTTP {response.status_code})')
+    try:
+        rows = response.json()
+    except ValueError as exc:
+        raise QuoteError('Invalid option snapshot JSON') from exc
+    if not isinstance(rows, list):
+        raise QuoteError('Option snapshot must be a list')
+    matches = [row for row in rows if isinstance(row, dict) and row.get('symbol') == symbol]
+    if len(matches) != 1:
+        raise QuoteError('Missing or ambiguous option snapshot')
+    row = matches[0]
+    try:
+        if any(isinstance(row.get(key), bool) for key in ('ask', 'quote_time')):
+            raise ValueError('Boolean quote field')
+        price = float(row['ask'])
+        timestamp = float(row['quote_time']) / 1000
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise QuoteError('Invalid option ask or quote_time') from exc
+    age = (now or datetime.now(UTC)).timestamp() - timestamp
+    if not math.isfinite(price) or price <= 0:
+        raise QuoteError('Option ask must be positive and finite')
+    if not math.isfinite(age) or age < -5 or age > max_age_seconds:
+        raise QuoteError('Option quote is stale or has an invalid timestamp')
+    return {'price': price, 'quote_time': row['quote_time'], 'symbol': symbol, 'source': 'webull_ask'}
+
+
 def current_stock_quote(symbol, *, data_client=None, now=None, max_age_seconds=300):
     if data_client is None:
         from app.webull_broker import get_data_client

@@ -47,6 +47,12 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
             "notional_usd": getattr(decision, "notional_usd", 0.0),
         }
 
+    if d.get("action") == "skip":
+        return {"skipped": True, "reason": d.get("rationale", "Decision skipped")}
+    if payload is not None and getattr(payload, "direction", None) == "neutral":
+        if d.get("action") != "buy" or d.get("strategy") != "iron_condor":
+            return {"skipped": True, "reason": "Neutral execution requires an iron_condor decision"}
+
     client_order_id = f"om-{fingerprint[:24]}"
     if settings.dry_run:
         return {
@@ -71,7 +77,6 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
         executor = BearishPutOptionExecutor(module=option_module)
         expiry = (datetime.now(UTC) + timedelta(days=5)).strftime("%Y-%m-%d")
         strike = round(float(reference_level) / 5.0) * 5.0
-        entry_limit = max(float(strike) * 0.08, 1.0)
         try:
             order_result = executor.submit(
                 account_id=option_module.get_account_id(),
@@ -79,9 +84,8 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
                 strike=strike,
                 expiration=expiry,
                 quantity=1,
-                entry_limit=entry_limit,
-                profit_percent=10,
-                stop_loss_percent=5,
+                profit_percent=20,
+                stop_loss_percent=10,
             )
         except Exception as exc:
             # If no option contracts are available, treat this idea as skipped.
@@ -101,40 +105,56 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
             "option": {"type": executor.option_type(), "strategy": executor.strategy_label()},
         }
 
-    # Handle neutral Optionomics iron-condor ideas by submitting an iron-condor combo
     if payload is not None and getattr(payload, "direction", None) == "neutral":
-        from app.iron_condor_option_executor import IronCondorOptionExecutor
+        from app.iron_condor_option_executor import IronCondorOptionExecutor, CondorValidationError
+        from app.ledger import Ledger
+        from app.webull_quotes import QuoteError
 
-        option_module = _load_webull_option_module()
-        executor = IronCondorOptionExecutor(module=option_module)
-        expiry = (datetime.now(UTC) + timedelta(days=30)).strftime("%Y-%m-%d")
-        reference = float(getattr(payload, "entry_price", None) or getattr(payload, "target_price", None) or getattr(payload, "stop_price", None) or max(float(d.get("notional_usd") or 0.0) / 100.0, 1.0))
+        ledger = Ledger(settings.database_path)
+        reservation = f"iron-condor:{fingerprint}"
+        attempted = False
+
+        class AlreadySubmitted(Exception):
+            pass
+
+        def persist_before_submit(plan):
+            nonlocal attempted
+            # Atomic insert precedes the network call; persisted IDs survive a crash.
+            if not ledger.reserve(reservation, plan):
+                raise AlreadySubmitted()
+            attempted = True
+            ledger.finish(reservation, "submitting", d, plan)
 
         try:
-            order_result = executor.submit(
-                account_id=option_module.get_account_id(),
-                symbol=symbol,
-                expiration=expiry,
-                reference_price=reference,
-                exit_time_in_force="GTC",
-                quantity=1,
+            option_module = _load_webull_option_module()
+            executor = IronCondorOptionExecutor(module=option_module)
+            expiry = (datetime.now(UTC) + timedelta(days=30)).strftime("%Y-%m-%d")
+            result = executor.submit(
+                account_id=option_module.get_account_id(), symbol=symbol,
+                expiration=expiry, reference_price=payload.entry_price,
+                max_risk_usd=min(float(d.get("notional_usd") or 0), settings.max_notional_usd),
+                exit_time_in_force="GTC", quantity=1, before_submit=persist_before_submit,
             )
+        except AlreadySubmitted:
+            return {"skipped": True, "reason": "Iron-condor attempt already recorded; reconcile saved event before retrying"}
+        except (CondorValidationError, QuoteError) as exc:
+            if attempted:
+                ledger.fail(reservation, type(exc).__name__)
+                raise
+            return {"skipped": True, "reason": str(exc)}
         except Exception as exc:
-            msg = str(exc)
-            if "No option contracts found" in msg or "Contract validation failed" in msg:
-                return {"skipped": True, "reason": msg}
+            if attempted:
+                ledger.fail(reservation, f"{type(exc).__name__}: submission unresolved; reconcile saved order IDs")
             raise
-
+        ledger.finish(reservation, "ordered", d, result)
         return {
-            "dry_run": False,
-            "id": str(order_result.get("order_id") or order_result.get("client_order_id") or ""),
-            "client_order_id": client_order_id,
-            "symbol": symbol,
-            "status": "submitted",
-            "side": "IRON_CONDOR",
+            "dry_run": False, "id": result["entry_id"],
+            "client_order_id": result["entry_id"], "symbol": symbol,
+            "status": "submitted", "side": "SELL", "broker": "webull",
             "notional_usd": d.get("notional_usd"),
-            "broker": "webull",
-            "option": {"type": executor.option_type(), "strategy": executor.strategy_label()},
+            "option": {"type": "IRON_CONDOR", "strategy": "iron_condor"},
+            **{key: result[key] for key in ("combo_id", "entry_id", "profit_id", "stop_id",
+                                           "entry_credit", "profit_debit", "stop_debit", "max_loss_usd")},
         }
 
     webull_module = _load_webull_stock_module()

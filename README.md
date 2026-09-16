@@ -61,6 +61,9 @@ DATABASE_PATH=bot.sqlite3
 
 ## Run locally
 
+For Oracle VM setup, networking, SSH, service configuration and backups, see
+[deployment.md](deployment.md).
+
 ```bash
 uv sync
 PYTHONPATH=. uv run fastapi dev app/main.py
@@ -284,9 +287,19 @@ It validates directional logic such as:
 
 - bullish trades need `target > entry` and `stop < entry`
 - bearish trades need `target < entry` and `stop > entry`
-- neutral trades may be treated as an iron-condor style play depending on the pipeline
+- neutral trades require positive finite levels with `target < entry < stop` and route to the iron-condor paper submitter
 
-Then `apply_risk_gates()` applies the final deterministic guards:
+Neutral submission uses four listed contracts, fresh bid/ask quotes, a SELL LIMIT
+credit entry, and four-leg BUY exits at 10% profit / 5% loss relative to the entry
+limit credit. The selected spread's maximum loss before fees must fit
+`MAX_NOTIONAL_USD`. An `events` reservation saves order IDs before sending and
+blocks retries after ambiguous submissions. `DRY_RUN=true` remains broker-free.
+See [the neutral iron-condor flow](netural-iron-condor.md) for the diagram,
+selection rules and sandbox validation limits. `ALLOW_SHORT_SELLING` controls
+bearish decisions and is not required for neutral iron condors.
+
+`apply_risk_gates()` provides these additional deterministic guards (the current
+polling path does not call it):
 
 - symbol must match
 - risk action must be consistent with signal direction
@@ -316,13 +329,51 @@ The `Ledger` class manages SQLite tables:
 - `events`: stores processed feed events and their decision/order state
 - `optionomics_trade_ideas`: stores each Trade Idea and its final status
 
-It deduplicates by `trade_id`, which prevents the same idea from being submitted repeatedly. Every trade idea gets a status such as:
+The ledger tracks each idea by `trade_id`. These statuses describe application
+processing, not the broker's execution or fill status:
 
-- `queued`
-- `skipped`
-- `dry_run`
-- `ordered`
-- `failed`
+| Status | Definition |
+| --- | --- |
+| `queued` | The idea has been saved for processing, but no final outcome has been recorded yet. It does not mean an order is queued at Webull. A stopped process can leave this status behind. |
+| `ordered` | The non-dry-run submission returned successfully and the app recorded the result. This does **not** confirm that the order filled or that the position is closed. Check Webull for execution status. |
+| `failed` | An exception interrupted processing or submission. Check application logs and any stored error details. In `main.py`, this alone does **not** prove that Webull rejected or never received the order; a timeout can leave the broker outcome uncertain. |
+| `skipped` | The app chose not to submit an order for this processing attempt, for example because price levels were invalid, the symbol did not match, or the market was closed. Inspect the decision rationale or stored skip reason. |
+| `dry_run` | The app prepared a simulated order with `DRY_RUN=true`; it did not submit it to Webull. |
+
+The bullish runner uses `submitted` instead of `ordered`, and uses
+`submission_unknown` when an exception occurs after its submission callback.
+That outcome requires broker reconciliation before retrying. Some bullish skips
+(such as duplicate symbols, unavailable quotes, or exceeding the budget) appear
+only in scan output and do not create or change a database row. A duplicate skip
+does not change an existing `submitted` or `ordered` record to `skipped`.
+
+#### Status transitions
+
+```mermaid
+flowchart TD
+    A[Trade idea received] --> B{Already processed?}
+    B -->|Yes| C[Skip this scan<br/>Keep existing database status]
+    B -->|No| Q[queued]
+
+    Q --> V{Validation and submission checks}
+    V -->|Not eligible| S[skipped]
+    V -->|Exception| F[failed]
+    V -->|Eligible| D{DRY_RUN?}
+
+    D -->|Yes| DR[dry_run]
+    D -->|No| W[Submit to Webull]
+
+    W -->|Success: main.py| O[ordered]
+    W -->|Success: bullish runner| SU[submitted]
+    W -->|Exception: main.py| F
+    W -->|Exception before submission callback: bullish runner| F
+    W -->|Exception after submission callback: bullish runner| U[submission_unknown]
+```
+
+`ordered` and `submitted` record successful submission, not a confirmed fill.
+`submission_unknown` requires checking Webull before retrying. This diagram
+summarizes processing outcomes: the bullish runner performs validation before
+claiming a `queued` row, so it can skip an entry without creating a record.
 
 ### 9. Health endpoint
 
@@ -419,6 +470,15 @@ sqlite3 bot.sqlite3 ".schema optionomics_trade_ideas"
 ```
 rm -f bot.sqlite3 bot.sqlite3.exits.lock bot.sqlite3.write.lock && ls -1 bot.sqlite3* 2>/dev/null || true
 ```
+
+### Browse database records
+
+With the FastAPI app running, open http://127.0.0.1:8000/records or select
+“Browse database records” from the dashboard. Choose a ledger table, filter by
+created or updated time, and use View to inspect the complete stored record.
+Date inputs use your browser timezone; From is inclusive and Until is exclusive.
+Today selects the current local day. Results are paginated in groups of 50.
+The page is read-only and includes raw stored payloads; use it on localhost.
 
 ### Top bullish flow stock brackets
 

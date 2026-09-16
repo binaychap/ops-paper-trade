@@ -50,7 +50,7 @@ def round_to_tick(price: float, tick_size: float) -> float:
     return float(ticks * tick_decimal)
 
 
-def _find_valid_contract(symbol: str, desired_expiration: str | None, desired_strike: float | None) -> tuple[str, float, str | None]:
+def _find_valid_contract(symbol: str, desired_expiration: str | None, desired_strike: float | None, *, option_type: str | None = None) -> tuple[str, float, str | None]:
     """Query Webull option contracts and return a validated (expiration, strike).
 
     If the exact expiration/strike aren't available, pick the closest matching values.
@@ -102,6 +102,8 @@ def _find_valid_contract(symbol: str, desired_expiration: str | None, desired_st
 
     expirations: dict[str, dict[float, dict]] = {}
     for item in items:
+        if option_type is not None and str(item.get("option_type") or "").upper() != option_type:
+            continue
         exp = item.get("expiration_date") or item.get("expiration") or item.get("exp_date") or item.get("expire_date") or item.get("expiry")
         if not exp:
             continue
@@ -404,9 +406,9 @@ def buy_put_with_bracket(
     strike: float,
     expiration: str,
     quantity: int,
-    entry_limit: float,
-    profit_percent: float = 10,
-    stop_loss_percent: float = 5,
+    entry_limit: float | None = None,
+    profit_percent: float = 20,
+    stop_loss_percent: float = 10,
     trade_client=None,
     *,
     exit_time_in_force: str = "DAY",
@@ -415,13 +417,18 @@ def buy_put_with_bracket(
     symbol = symbol.upper()
     # Validate/adjust expiration and strike against broker data
     try:
-        expiration, strike, contract_symbol = _find_valid_contract(symbol, expiration, strike)
+        expiration, strike, contract_symbol = _find_valid_contract(symbol, expiration, strike, option_type="PUT")
     except Exception as exc:
         raise RuntimeError(f"Contract validation failed: {exc}")
+    if entry_limit is None:
+        from app.webull_quotes import current_option_ask
+        entry_limit = current_option_ask(contract_symbol)["price"]
     tick_size = 0.05
     entry_limit = round_to_tick(entry_limit, tick_size)
     take_profit_price = round_to_tick(entry_limit * (1 + profit_percent / 100), tick_size)
     stop_price = round_to_tick(entry_limit * (1 - stop_loss_percent / 100), tick_size)
+    if not 0 < stop_price < entry_limit < take_profit_price:
+        raise ValueError("PUT bracket prices collapse or are invalid after tick rounding")
     combo_id = new_id()
 
     master_order = {

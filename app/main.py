@@ -24,6 +24,7 @@ from app.optionomics import build_trade_decision_from_optionomics_payload
 from app.webull_submitter import submit_paper_order, _is_webull_rate_limit_error as is_webull_rate_limit_error
 from app.ledger import Ledger
 from app.dashboard import router as dashboard_router
+from app.records import router as records_router
 
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -68,6 +69,8 @@ class Settings(BaseSettings):
     webull_app_key: str | None = Field(default=None, alias="WEBULL_APP_KEY")
     webull_app_secret: str | None = Field(default=None, alias="WEBULL_APP_SECRET")
     webull_endpoint: str = Field(default="api.sandbox.webull.com", alias="WEBULL_ENDPOINT")
+    # Accepted from the shared .env; account selection is used by the bullish runner.
+    top_bullish_account_number: str = Field(default="", alias="TOP_BULLISH_ACCOUNT_NUMBER", repr=False)
 
     next_day_exit_enabled: bool = Field(default=False, alias="NEXT_DAY_EXIT_ENABLED")
     next_day_exit_time: str = Field(default="09:35", pattern=r"^(09:(3[0-9]|[45][0-9])|1[0-5]:[0-5][0-9])$", alias="NEXT_DAY_EXIT_TIME")
@@ -181,6 +184,7 @@ def resolve_option_contract_symbol(
 
 app = FastAPI(title="Optionomics Trade Ideas Trading Bot", version="1.0.0")
 app.include_router(dashboard_router)
+app.include_router(records_router)
 
 
 def poll_optionomics_trade_ideas() -> list[dict[str, Any]]:
@@ -409,6 +413,15 @@ def build_option_trade_request(
 
 
 def build_trade_decision(payload: TradeIdea, settings: Settings) -> TradingDecision:
+    if payload.direction == "neutral":
+        return build_trade_decision_from_optionomics_payload({
+            "symbol": payload.symbol, "direction": "neutral",
+            "levels": {key: value for key, value in {
+                "entry": payload.entry_price, "target": payload.target_price,
+                "stop": payload.stop_price,
+            }.items() if value is not None},
+        }, settings)
+
     action = "skip"
     rationale = "No trade action determined."
     risk_notes: list[str] = []
@@ -482,7 +495,13 @@ def apply_risk_gates(
     if payload.entry_price is None or payload.target_price is None or payload.stop_price is None:
         return skip_decision(decision, "Entry, target, and stop levels are required")
 
-    if decision.action == "buy":
+    if decision.action == "buy" and payload.direction == "neutral":
+        from app.optionomics import validate_optionomics_directional_levels
+        if decision.strategy != "iron_condor" or not validate_optionomics_directional_levels(
+            "neutral", payload.entry_price, payload.target_price, payload.stop_price
+        ):
+            return skip_decision(decision, "Invalid neutral iron-condor setup")
+    elif decision.action == "buy":
         if payload.direction != "bullish":
             return skip_decision(decision, "Buy action is allowed only for bullish trade ideas")
         if payload.target_price <= payload.entry_price:

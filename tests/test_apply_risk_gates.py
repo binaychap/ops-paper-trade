@@ -217,7 +217,7 @@ def test_optionomics_symbol_mismatch_is_rejected_before_execution():
     assert validate_optionomics_symbol_match(idea, decision) is False
 
 
-def test_optionomics_neutral_payload_is_ignored():
+def test_optionomics_neutral_payload_selects_iron_condor():
     payload = {
         "id": "idea-neutral-ignore",
         "symbol": "ULTA",
@@ -235,11 +235,12 @@ def test_optionomics_neutral_payload_is_ignored():
 
     decision = build_trade_decision_from_optionomics_payload(payload, settings)
 
-    assert decision.action == "skip"
+    assert decision.action == "buy"
+    assert decision.strategy == "iron_condor"
     assert "neutral" in decision.rationale.lower()
 
 
-def test_optionomics_neutral_crush_payload_is_ignored():
+def test_optionomics_neutral_crush_payload_selects_iron_condor():
     payload = {
         "id": "idea-neutral-crush",
         "symbol": "ULTA",
@@ -257,8 +258,9 @@ def test_optionomics_neutral_crush_payload_is_ignored():
 
     decision = build_trade_decision_from_optionomics_payload(payload, settings)
 
-    assert decision.action == "skip"
-    assert decision.notional_usd == 0.0
+    assert decision.action == "buy"
+    assert decision.strategy == "iron_condor"
+    assert decision.notional_usd == 250.0
     assert "neutral" in decision.rationale.lower()
 
 
@@ -498,7 +500,9 @@ def test_submit_paper_order_routes_bearish_decisions_to_put_executor(monkeypatch
     assert result["broker"] == "webull"
     assert result["side"] == "SELL"
     assert captured["submit_kwargs"]["symbol"] == "AAPL"
-    assert captured["submit_kwargs"]["entry_limit"] > 0
+    assert "entry_limit" not in captured["submit_kwargs"]
+    assert captured["submit_kwargs"]["profit_percent"] == 20
+    assert captured["submit_kwargs"]["stop_loss_percent"] == 10
 
 
 def test_buy_stock_submits_combo_bracket_order(monkeypatch):

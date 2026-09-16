@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -51,6 +52,8 @@ def normalize_confidence(value: Any, *, default: float = 1.0) -> float:
 
 
 def validate_optionomics_directional_levels(direction: str, entry: float, target: float, stop: float) -> bool:
+    if not all(math.isfinite(v) and v > 0 for v in (entry, target, stop)):
+        return False
     if direction == "bullish":
         return target > entry and stop < entry
     if direction == "bearish":
@@ -64,24 +67,16 @@ def build_trade_decision_from_optionomics_payload(payload: dict[str, Any], setti
     idea = OptionomicsTradeIdea.model_validate(payload)
     levels = idea.levels
     pipeline = (idea.pipeline_short_name or idea.pipeline_name or "placeholder").strip()
-    strategy_name = "iron_condor" if pipeline.lower() == "crush" else "placeholder"
+    strategy_name = "iron_condor" if idea.direction == "neutral" or pipeline.lower() == "crush" else "placeholder"
 
     normalized_confidence = normalize_confidence(idea.confidence_score, default=1.0)
-
-    if idea.direction == "neutral":
-        return {
-            "action": "skip",
-            "symbol": idea.symbol,
-            "strategy": strategy_name,
-            "notional_usd": 0.0,
-            "confidence": normalized_confidence,
-            "rationale": "Neutral Optionomics trade idea; ignoring it and skipping execution.",
-            "risk_notes": ["Neutral trade idea ignored"],
-        }
 
     if idea.direction == "bullish":
         action = "buy"
         rationale = f"Optionomics {pipeline} idea: bullish setup flagged for {strategy_name} execution."
+    elif idea.direction == "neutral":
+        action = "buy"
+        rationale = f"Optionomics {pipeline} idea: neutral setup selected for iron_condor execution."
     elif idea.direction == "bearish":
         if settings.allow_short_selling:
             action = "sell_short"

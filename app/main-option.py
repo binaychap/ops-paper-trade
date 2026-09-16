@@ -726,6 +726,11 @@ def maybe_submit_order(
     *,
     trade_id: str | None = None,
 ) -> dict[str, Any] | None:
+    if payload.direction == "neutral":
+        from app.main import maybe_submit_order as submit_shared_neutral
+        from app.ledger import Ledger as SharedLedger
+        return submit_shared_neutral(SharedLedger(settings.database_path), decision, settings, payload, trade_id=trade_id)
+
     # The polling loop performs the duplicate check before the trade is inserted
     # into the ledger. This helper should submit the current trade without
     # falsely treating the just-inserted row as a duplicate.
@@ -1038,6 +1043,10 @@ def submit_paper_order(
     fingerprint: str,
     payload: TradeIdea | None = None,
 ) -> dict[str, Any]:
+    if payload is not None and payload.direction == "neutral":
+        from app.webull_submitter import submit_paper_order as submit_shared_order
+        return submit_shared_order(decision, settings, fingerprint, payload)
+
     client_order_id = f"om-{fingerprint[:24]}"
     logger.info("Processing paper order for %s", decision.symbol)
     if settings.dry_run:
@@ -1118,9 +1127,8 @@ def submit_paper_order(
             strike=selected_strike,
             expiration=selected_expiration,
             quantity=quantity,
-            entry_limit=entry_limit,
-            profit_percent=10,
-            stop_loss_percent=5,
+            profit_percent=20,
+            stop_loss_percent=10,
         )
 
     logger.info(

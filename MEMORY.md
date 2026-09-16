@@ -1,5 +1,58 @@
 # Ops Paper Trade — project memory
 
+## Neutral iron-condor submission (2026-09-16)
+
+Neutral feed ideas now select iron_condor with internal action buy and require
+positive finite levels with target < entry < stop. The shared submitter builds
+an actual SELL LIMIT credit bracket; main-option.py's neutral polling/submission
+also delegates to the shared path. ALLOW_SHORT_SELLING remains bearish-only.
+The executor selects listed, standard OCC contracts with reported multiplier
+100, one expiry in the 30–44 day window and equal wings. Four fresh bid/ask quotes
+price the credit (short bids minus long asks). Entry rounds down to 0.05; exits
+reverse all four legs as BUY combos at 90%/105% of entry credit, rounded to 0.05.
+Entry is DAY, exits GTC. Quantity is one; maximum spread loss before fees must
+fit MAX_NOTIONAL_USD and decision budget. Invalid data or over-budget setups skip.
+
+Before submission, the existing events table atomically reserves
+iron-condor:<fingerprint> and saves request/tracking IDs. Any prior reservation
+blocks a replay, including timeout/failure, regardless of FORCE_REPROCESS.
+Manual reconciliation is required; there is no automatic option fill/exit
+reconciliation. Different trade IDs can still open overlapping positions.
+Dry runs remain broker-free previews and do not validate quotes or reserve.
+No environment values changed. No broker orders placed. Account permissions,
+sandbox response fields and multi-leg bracket acceptance remain unverified.
+`netural-iron-condor.md` contains the updated flow diagram and operating details.
+Focused mocked suite: 74 passed. Full suite before final additional coverage:
+130 passed, 17 failures in the already-recorded bullish market-hours interface.
+
+## Bearish flow source verification (2026-09-16)
+
+`bearish.md` documents the current main.py polling path with a Mermaid flowchart.
+Current source supersedes older observations below: bearish `sell_short` routes
+to `BearishPutOptionExecutor` and `buy_put_with_bracket` (BUY_TO_OPEN PUT), gated
+by `ALLOW_SHORT_SELLING`. Feed levels require target < entry and stop > entry;
+option exits use +20%/-10% premium brackets, one contract, DAY duration. This
+branch does not register a scheduled stock exit. Neutral behavior is described above.
+Polling and submission both check weekday 09:30–16:00 ET hours. Initial dedupe
+now calls `has_ordered_trade`; when ID and symbol are supplied, both must match
+an ordered row. Static source verification only; no broker orders were placed.
+
+
+Bearish entries now use the selected PUT contract's current snapshot ask instead
+of the strike-based premium estimate. The SDK option snapshot must match the
+contract and supply a positive finite ask and quote_time within 60 seconds
+(up to five seconds future tolerance). PUT selection filters option_type=PUT.
+Missing/stale quotes prevent submission. Entry stays LIMIT, rounded to the
+existing 0.05 tick; exits are based on that limit, not actual fills. Invalid or
+collapsed rounded brackets are rejected. Both main and main-option bearish
+callers use 20% profit/10% stop. Dry runs return before quotes. US Webull API docs
+state MARKET option orders are unsupported. Focused mocked tests: 41 passed;
+no broker orders placed, and live option quote availability remains unverified.
+Removed the duplicate `*` parameter separator from
+`IronCondorOptionExecutor.submit` (2026-09-16). Full app compilation and executor
+import now pass; all submit arguments after self remain keyword-only. This
+syntax fix was followed by the neutral implementation described above.
+
 Last reviewed: 2026-09-05. Scheduler implementation is covered by local fake-broker
 tests; live sandbox execution has not been validated.
 
@@ -138,6 +191,13 @@ These are observations from static source review, not fixes or a test report:
 
 ## Local state and maintenance
 
+`deployment.md` is the Oracle Always Free deployment runbook: VM/network/SSH
+setup, private dashboard access, SQLite migration, systemd templates, staged
+strategy activation and backup guidance. Templates are documentation only;
+cloud installation and ARM compatibility have not been verified by deployment.
+The runbook targets the user's Oracle Linux 9 image, using `opc`, `dnf`, and
+`/home/opc` service paths; Python is installed with uv, not the system package manager.
+
 `.env`, `.venv`, SQLite runtime state, logs, caches, and editor configuration
 are local artifacts. Preserve existing runtime state during development and
 use temporary databases for tests. No service or broker submission was started
@@ -186,6 +246,17 @@ disabled until checked. No broker orders were placed during implementation.
 
 ## Trade status dashboard
 
+`/records` provides a separate local read-only database browser linked from the
+dashboard. `/api/records` supports the four application tables (events, trade
+ideas, scheduled exits and bullish trades), created/updated time filtering,
+and 50-row server pagination. Date filters require timezone offsets, include
+the start and exclude the end; the UI uses browser-local time. Scheduled exits
+have only updated time. The full stored row, including JSON payloads and any
+account data therein, is visible in details, unlike the curated dashboard.
+No authentication is added; this is intended for the existing localhost app.
+Reads use SQLite mode=ro and never initialize missing databases. Tests cover
+timezone boundaries, missing databases/columns, table validation and pagination.
+
 `app/dashboard.py` serves a read-only dashboard at `/`, static CSS/JS from
 `app/static/`, and a no-cache ledger snapshot at `/api/trades`. No frontend build
 is required. The page has search/status/attention filters, 20-row pagination,
@@ -233,6 +304,10 @@ or `.env`. Before claiming a symbol, the runner resolves an exact, unique
 Missing/ambiguous matches stop submission without falling back to the first
 account. Other callers of `get_account_id()` retain first-account selection.
 Changing accounts does not reset the bullish ledger's symbol deduplication.
+`main.py.Settings` also accepts `TOP_BULLISH_ACCOUNT_NUMBER` from the shared
+`.env` so FastAPI startup does not fail with `extra_forbidden`. This field
+does not change main.py's account selection; other unknown settings remain
+rejected. Account numbers are excluded from this field's model repr.
 
 `app/main-top-bullish.py` provides `MainTopBullish.run(limit=10)`, a single-scan
 method loading `TopBullish` from `app/top-bullish.py` and calling the existing
