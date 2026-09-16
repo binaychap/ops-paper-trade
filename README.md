@@ -550,6 +550,7 @@ services after changing these values; existing broker orders are not modified.
 
 | Execution path | Account setting |
 | --- | --- |
+| `main.py` bullish stock branch | `BULLISH_STOCK_ACCOUNT_NUMBER` |
 | `main-top-bullish.py` stock runner | `TOP_BULLISH_ACCOUNT_NUMBER` |
 | Bearish PUT via `main.py` or `main-option.py` | `OPTIONS_MARGIN_ACCOUNT_NUMBER` |
 | Neutral iron condor via either main entry point | `OPTIONS_MARGIN_ACCOUNT_NUMBER` |
@@ -567,10 +568,10 @@ accounts. The local configuration was compared and the two values matched on
 2026-09-16; actual account identifiers remain only in local `.env`. No live
 account lookup or account-type/permission verification was performed.
 
-This applies to the dedicated bullish flow runner, not every bullish caller:
-the main service's bullish stock path and `main-option.py`'s CALL path still use
-the first returned account. They do not read `TOP_BULLISH_ACCOUNT_NUMBER` for
-selection. See [deployment.md](deployment.md) before enabling multiple runners.
+The main service's bullish stock branch uses its own required
+`BULLISH_STOCK_ACCOUNT_NUMBER`, with the same exact-match lookup and no fallback.
+The separate `main-option.py` CALL path still selects the first returned account.
+See [bullish-stock.md](bullish-stock.md) for the main-service diagram.
 
 Process environment overrides `.env`. Restart the affected services after an
 account change. Existing orders and ledger reservations are not moved or reset.

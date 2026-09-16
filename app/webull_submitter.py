@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from app.strategy_settings import exit_percentages, options_margin_account_id
+from app.strategy_settings import exit_percentages, options_margin_account_id, bullish_stock_account_id
 
 
 def _load_webull_stock_module() -> Any:
@@ -163,7 +163,7 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
         }
 
     webull_module = _load_webull_stock_module()
-    account_id = webull_module.get_account_id()
+    account_id = bullish_stock_account_id(webull_module, settings)
 
     quantity = 1
     execute_at_market = bool(d.get("execute_at_market", False))

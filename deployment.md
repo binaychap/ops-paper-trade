@@ -164,6 +164,7 @@ DRY_RUN=true
 OPTIONOMICS_POLL_ENABLED=false
 NEXT_DAY_EXIT_ENABLED=false
 DATABASE_PATH=/var/lib/ops-paper-trade/bot.sqlite3
+BULLISH_STOCK_ACCOUNT_NUMBER=YOUR_SANDBOX_CASH_ACCOUNT_NUMBER
 TOP_BULLISH_ACCOUNT_NUMBER=YOUR_SANDBOX_MARGIN_ACCOUNT_NUMBER
 OPTIONS_MARGIN_ACCOUNT_NUMBER=YOUR_SANDBOX_MARGIN_ACCOUNT_NUMBER
 BULLISH_PROFIT_PERCENT=10
@@ -191,9 +192,10 @@ Both routes use the same exact, unique account-number lookup and submit with
 the returned API account ID. Missing configuration or an unmatched/ambiguous
 account stops submission, without falling back to the first account.
 
-The main service's bullish stock path and the separate option runner's CALL
-path still select the first returned account. Verify those destinations
-separately if you enable them. Account type, permissions and sandbox availability
+The main service's bullish stock path requires `BULLISH_STOCK_ACCOUNT_NUMBER`
+and resolves it by the same exact-match lookup, without first-account fallback.
+The separate option runner's CALL path still selects the first returned account;
+verify that destination separately if you enable it. Account type, permissions and sandbox availability
 have not been verified by the local configuration comparison. Dry runs do not
 validate account access. See [strategy account selection](README.md#strategy-account-selection).
 

@@ -413,7 +413,7 @@ def test_submit_paper_order_calculates_stop_and_target_from_entry(monkeypatch):
 
     class FakeWebullModule:
         @staticmethod
-        def get_account_id():
+        def get_account_id(**kwargs):
             return "acct-123"
 
         @staticmethod
@@ -430,7 +430,7 @@ def test_submit_paper_order_calculates_stop_and_target_from_entry(monkeypatch):
         rationale="test",
         risk_notes=[],
     )
-    settings = Settings(DRY_RUN=False)
+    settings = Settings(DRY_RUN=False, BULLISH_STOCK_ACCOUNT_NUMBER="test-cash")
     payload = TradeIdea(
         alert_name="entry-stop-target",
         source="trade_idea",
@@ -559,7 +559,7 @@ def test_submit_paper_order_fails_immediately_on_webull_429(monkeypatch):
 
     class FakeWebullModule:
         @staticmethod
-        def get_account_id():
+        def get_account_id(**kwargs):
             return "acct-123"
 
         @staticmethod
@@ -576,7 +576,7 @@ def test_submit_paper_order_fails_immediately_on_webull_429(monkeypatch):
         rationale="test",
         risk_notes=[],
     )
-    settings = Settings(DRY_RUN=False)
+    settings = Settings(DRY_RUN=False, BULLISH_STOCK_ACCOUNT_NUMBER="test-cash")
 
     monkeypatch.setattr("app.webull_submitter._load_webull_stock_module", lambda: FakeWebullModule())
 

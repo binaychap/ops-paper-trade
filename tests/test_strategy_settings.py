@@ -37,9 +37,9 @@ def test_invalid_percentages_rejected(name, value):
 
 def test_bullish_order_uses_configured_percentages(monkeypatch):
     captured = {}
-    broker = SimpleNamespace(get_account_id=lambda: 'test', buy_stock=lambda **kw: captured.update(kw) or {})
+    broker = SimpleNamespace(get_account_id=lambda **kw: 'test', buy_stock=lambda **kw: captured.update(kw) or {})
     monkeypatch.setattr('app.webull_submitter._load_webull_stock_module', lambda: broker)
-    settings = Settings(_env_file=None, DRY_RUN=False, NEXT_DAY_EXIT_ENABLED=False,
+    settings = Settings(_env_file=None, DRY_RUN=False, BULLISH_STOCK_ACCOUNT_NUMBER="test-cash", NEXT_DAY_EXIT_ENABLED=False,
                         BULLISH_PROFIT_PERCENT=12, BULLISH_STOP_LOSS_PERCENT=6)
     payload = SimpleNamespace(direction='bullish', entry_price=100, target_price=120, stop_price=90)
     submit_paper_order(dict(action='buy', symbol='AAPL', notional_usd=250), settings, 'test', payload)

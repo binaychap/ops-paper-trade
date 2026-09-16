@@ -1,9 +1,89 @@
-# Bullish flow stock runner
+# Bullish stock flows
 
-Source-verified on 2026-09-16. This document covers
-[app/main-top-bullish.py](app/main-top-bullish.py), the dedicated bullish-flow
-runner. It reads Optionomics bullish flow and buys **one share of stock** with
-a profit/stop bracket. It does not buy a CALL option.
+Source-verified on 2026-09-16. There are two separate bullish stock paths:
+
+| Path | Account selection | Entry reference |
+| --- | --- | --- |
+| `app/main.py` bullish trade ideas | Exact `BULLISH_STOCK_ACCOUNT_NUMBER` match | Feed entry level |
+| `app/main-top-bullish.py` bullish-flow runner | Exact `TOP_BULLISH_ACCOUNT_NUMBER` match | Fresh Webull stock snapshot |
+
+Both submit one-share stock brackets with configurable bullish profit and stop
+percentages. They do not buy CALL options.
+
+## Main service bullish direction: end-to-end flow
+
+The bullish branch of [app/main.py](app/main.py) uses
+`BULLISH_STOCK_ACCOUNT_NUMBER` from `.env` to select its stock account through
+`get_account_id(account_number=...)`. This requires exactly one matching broker
+account with a valid API account ID. Missing configuration or an unmatched or
+ambiguous account stops submission; there is no first-account fallback.
+
+The configured destination for this flow is **Individual cash (DEL29YQA)**.
+The value is stored in local `.env`, not hardcoded in application code. Account
+availability and cash-account permissions have not been live-verified.
+`TOP_BULLISH_ACCOUNT_NUMBER` separately controls the dedicated bullish runner.
+Restart the API service after changing `BULLISH_STOCK_ACCOUNT_NUMBER`.
+
+```mermaid
+flowchart TD
+    A[FastAPI startup: polling enabled and feed credentials present] --> B[Polling interval and weekday market-hours check]
+    B --> C[Fetch Optionomics trade ideas]
+    C --> D{Matching trade ID and symbol already ordered?}
+    D -->|Yes, unless FORCE_REPROCESS| NEXT[Continue to next idea]
+    D -->|No, or FORCE_REPROCESS| E[Save queued idea and build bullish buy decision]
+    E --> F{Required levels valid: target above entry and stop below entry?}
+    F -->|No| SKIP[Record skipped]
+    F -->|Yes| G{Symbol matches?}
+    G -->|No| SKIP
+    G -->|Yes| H[maybe_submit_order: recheck ordered duplicate and market hours]
+    H -->|Duplicate| NEXT
+    H -->|Market closed| SKIP
+    H -->|Proceed| I{DRY_RUN?}
+    I -->|Yes| PREVIEW[Record dry_run without account lookup]
+    I -->|No| J[Load BULLISH_STOCK_ACCOUNT_NUMBER and require a nonempty value]
+    J --> K[Fetch Webull account list]
+    K -->|Missing or ambiguous match, or lookup error| FAIL[Record failed]
+    K -->|Exactly one account-number match| ACCOUNT[Use matched API account ID]
+    ACCOUNT -.-> INTENDED["Configured: Individual cash (DEL29YQA)"]
+    ACCOUNT --> PRICE[One-share LIMIT at feed entry; calculate configured bullish exits]
+    PRICE --> SCHEDULE{NEXT_DAY_EXIT_ENABLED?}
+    SCHEDULE -->|No| DAY[Submit bracket with DAY entry and exits]
+    SCHEDULE -->|Yes| CHECK[Require no active exit job, worker lock and flat stock position]
+    CHECK -->|Fails| FAIL
+    CHECK -->|Passes| SAVE[Persist scheduled exit job and IDs before submission]
+    SAVE --> GTC[Submit DAY entry with GTC profit and stop exits]
+    DAY -->|Success| OK[Record ordered and bracket IDs]
+    GTC -->|Success| OK
+    DAY -->|Exception| FAIL
+    GTC -->|Exception| FAIL
+    GTC -.-> WORKER[Exit worker reconciles entry and schedules next-session exit after fill]
+    OK --> NEXT
+    SKIP --> NEXT
+    PREVIEW --> NEXT
+    FAIL --> NEXT
+```
+
+The initial duplicate bypass does not bypass the second ordered check. The
+market-hours gate uses weekdays, 09:30 to before 16:00 Eastern, without holiday
+or early-close handling. Successful submission is recorded as `ordered`; this
+is not proof of a fill. The scheduled worker independently reconciles saved
+jobs, including uncertain submissions.
+
+The main polling decision does not request a market entry, so it normally uses
+a LIMIT at the feed entry. The shared submitter also supports `execute_at_market`
+for other callers. Unlike the dedicated runner below, this stock path does not
+fetch a fresh entry quote or enforce a one-share cost check against
+`MAX_NOTIONAL_USD`; `apply_risk_gates` is not called by its polling path.
+
+Both paths use `BULLISH_PROFIT_PERCENT` and `BULLISH_STOP_LOSS_PERCENT`:
+`target = reference × (1 + profit / 100)` and
+`stop = reference × (1 - stop / 100)`, rounded to two decimals.
+
+## Dedicated bullish-flow runner
+
+The rest of this document describes
+[app/main-top-bullish.py](app/main-top-bullish.py). Its explicit account lookup
+uses TOP_BULLISH_ACCOUNT_NUMBER rather than BULLISH_STOCK_ACCOUNT_NUMBER.
 
 ## Startup and scheduling
 
@@ -30,7 +110,7 @@ outside regular sessions. Quote freshness checks still apply. The earlier
 exchange-calendar checks are absent from source; related bullish tests remain
 failing, as recorded in `MEMORY.md`.
 
-## End-to-end flow
+## Dedicated runner: end-to-end flow
 
 ```mermaid
 flowchart TD
@@ -117,8 +197,8 @@ to share an account across these three paths. The local settings matched when
 checked on 2026-09-16; account type and permissions were not live-verified.
 Actual identifiers are intentionally excluded from this document.
 
-This differs from the main service's separate bullish stock path and
-`main-option.py`'s CALL path, which still select the first returned account.
+The main service's bullish stock path uses `BULLISH_STOCK_ACCOUNT_NUMBER`.
+The separate `main-option.py` CALL path still selects the first returned account.
 See [the account comparison](README.md#strategy-account-selection).
 
 ## Configurable entry and exits

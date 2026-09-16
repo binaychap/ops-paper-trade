@@ -2,17 +2,22 @@
 
 ## Options account selection (2026-09-16)
 
-README, deployment.md and both strategy documents now explain shared exact
-account lookup and the TOP_BULLISH_ACCOUNT_NUMBER / OPTIONS_MARGIN_ACCOUNT_NUMBER
-mapping. A read-only local comparison found the configured values equal;
-identifiers are intentionally omitted. Main bullish stock and separate CALL
-submission still use first-account selection. No live account verification.
+The main.py bullish stock path now requires BULLISH_STOCK_ACCOUNT_NUMBER in
+.env/environment and resolves an exact unique account-number match through the
+shared broker helper; missing/ambiguous matches block submission. The chosen
+cash account value is only in local .env, not in this memory or example config.
+Settings hide it from repr. TOP_BULLISH_ACCOUNT_NUMBER remains for the dedicated
+bullish runner, OPTIONS_MARGIN_ACCOUNT_NUMBER for PUT/iron-condor execution.
+Only the separate main-option.py CALL path retains first-account selection.
+README, deployment.md and bullish-stock.md reflect the new routing. Restart
+services after setting changes; no existing orders or reservations are moved.
+No live account lookup or account-type/permission verification was performed.
 
 Bearish PUT and iron-condor submissions now require OPTIONS_MARGIN_ACCOUNT_NUMBER
 from .env/environment. Shared settings hide it from repr. The shared submitter
 and main-option.py bearish branch use exact unique account-number lookup;
 missing configuration, missing matches or ambiguous matches prevent submission,
-without first-account fallback. Bullish account routing is unchanged. The user’s
+without first-account fallback. The user’s
 chosen value is saved only in local .env, not here or in example configuration.
 Account type and permissions are not live-verified. Existing ledger reservations
 are not reset by account changes. Mocked checks: 90 focused tests passed;
@@ -333,7 +338,7 @@ a short message. Application errors retain the actionable reason.
 
 ## Bullish flow stock runner
 
-`bullish.md` documents the dedicated runner end to end, with a Mermaid diagram,
+`bullish-stock.md` documents the dedicated runner end to end, with a Mermaid diagram,
 account lookup, configured exits, permanent claims and submission failure states.
 Source review confirms no current market-hours gate; total_premium float coercion
 accepts booleans, while trade_count rejects them. Documentation-only update.

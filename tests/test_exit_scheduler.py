@@ -378,10 +378,10 @@ def test_scheduled_submission_persists_intent_even_if_broker_times_out(monkeypat
         order_v3=SimpleNamespace(place_order=place),
         account_v2=SimpleNamespace(get_account_position=lambda *args: response([])),
     )
-    monkeypatch.setattr(module, 'get_account_id', lambda: 'test')
+    monkeypatch.setattr(module, 'get_account_id', lambda **kw: 'test')
     monkeypatch.setattr(module, 'get_trade_client', lambda: client)
     monkeypatch.setattr('app.webull_submitter._load_webull_stock_module', lambda: module)
-    settings = Settings(_env_file=None, DRY_RUN=False, NEXT_DAY_EXIT_ENABLED=True, DATABASE_PATH=database)
+    settings = Settings(_env_file=None, DRY_RUN=False, BULLISH_STOCK_ACCOUNT_NUMBER="test-cash", NEXT_DAY_EXIT_ENABLED=True, DATABASE_PATH=database)
     decision = {'action': 'buy', 'symbol': 'AAPL', 'notional_usd': 250}
     with pytest.raises(TimeoutError):
         submit_paper_order(decision, settings, 'stable-trade-id')
