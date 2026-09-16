@@ -227,12 +227,44 @@ a short message. Application errors retain the actionable reason.
 
 ## Bullish flow stock runner
 
-`app/main-top-bullish.py` provides `MainTopBullish.run(limit=10)`, a one-shot
-runner loading `TopBullish` from `app/top-bullish.py` and calling the existing
+Bullish live submission requires `TOP_BULLISH_ACCOUNT_NUMBER` in environment
+or `.env`. Before claiming a symbol, the runner resolves an exact, unique
+`account_number` match from the sandbox account list to the API `account_id`.
+Missing/ambiguous matches stop submission without falling back to the first
+account. Other callers of `get_account_id()` retain first-account selection.
+Changing accounts does not reset the bullish ledger's symbol deduplication.
+
+`app/main-top-bullish.py` provides `MainTopBullish.run(limit=10)`, a single-scan
+method loading `TopBullish` from `app/top-bullish.py` and calling the existing
 `webull-buy-combo-stock.py` helper. Each feed entry uses a Webull snapshot price
 for a one-share LIMIT entry, a 5% stop and 10% target (two decimal places), with
 DAY exits. Entries above `MAX_NOTIONAL_USD` are skipped. It does not start the
 existing polling service or next-day exit worker.
+
+The CLI now runs immediately and every 300 seconds until Ctrl+C; `--once`
+preserves one-shot execution. `run_forever` uses monotonic deadlines, skips
+missed ticks without overlapping scans, and continues after scan exceptions.
+Existing permanent symbol deduplication still applies across cycles. The
+feed-only `app/top-bullish.py` still fetches once. Scheduler checks use mocked
+time/feed calls, without starting a broker-connected scheduler.
+Scheduler logs now show cycle numbers, completion status counts and the next
+scan's local timestamp with UTC offset. Simulated cycles verify repeat execution,
+recovery after a scan exception and skipping missed ticks. Ledger updates alone
+do not establish polling activity: duplicate-only scans do not update rows.
+
+The previously implemented bullish market-hours checks are absent from the
+current source (verified 2026-09-15); their tests remain and fail. The following
+describes that earlier implementation, not current protection:
+Bullish scans (including dry runs) required an open XNYS regular session,
+using the existing `ExitCalendar` with explicit settings. Holidays, weekends,
+early closes and DST are respected. Checks precede feed/quote requests and
+ledger claims, with a final check in the broker's before-submit callback.
+Closed-market results use `outside_market_hours`; the five-minute loop stays
+running. A close before claim leaves the symbol retryable; a close in the final
+callback records a skipped claim, subject to existing permanent deduplication.
+`main.py` still uses its weekday 09:30–16:00 check and does not handle holidays
+or early closes. Its `apply_risk_gates` remains unused by its polling path.
+Bullish validation also rejects boolean premiums and nonfinite bracket prices.
 
 `app/webull_quotes.py` uses the installed SDK's `DataClient.market_data.get_snapshot`
 and validates symbol, positive finite price, and `last_trade_time` (milliseconds);

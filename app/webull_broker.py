@@ -83,7 +83,7 @@ def get_data_client():
 # ACCOUNT
 # ============================================================
 
-def get_account_id():
+def get_account_id(*, account_number=None):
     response = get_trade_client().account_v2.get_account_list()
 
     if response.status_code != 200:
@@ -93,6 +93,12 @@ def get_account_id():
         )
 
     accounts = response.json()
+
+    if account_number is not None:
+        matches = [a for a in accounts if a.get('account_number') == account_number]
+        if not account_number or len(matches) != 1 or not matches[0].get('account_id'):
+            raise ValueError('Configured Webull account number must match exactly one available account')
+        return matches[0]['account_id']
 
     if not accounts:
         raise RuntimeError("No Webull account found")
@@ -107,4 +113,3 @@ def get_account_id():
 
 def new_id():
     return uuid.uuid4().hex[:32]
-

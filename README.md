@@ -436,8 +436,22 @@ market hours. Entry is the quoted stock price, stop is 5% below entry, and targe
 is 10% above entry. One share must fit `MAX_NOTIONAL_USD` (default $250).
 
 To enable sandbox orders, use `DRY_RUN=false` with your intended `DATABASE_PATH`.
+Set `TOP_BULLISH_ACCOUNT_NUMBER` to the desired sandbox account number in `.env`.
+The runner requires an exact unique account match before claiming or submitting
+a trade. Existing symbol deduplication still applies when changing accounts.
 The runner calls `webull-buy-combo-stock.py`; exits use DAY time in force and the
-runner does not start the next-day exit scheduler. It runs once and exits.
+runner does not start the next-day exit scheduler. It scans immediately and
+then every five minutes while the process stays running. Stop with Ctrl+C;
+add `--once` to run one scan and exit. Scans never overlap, missed intervals
+are skipped, and a failed scan is retried at the next scheduled interval.
+The feed-only `app/top-bullish.py` remains a single fetch.
+
+Bullish scans require an open regular exchange session, including in dry-run
+mode. The XNYS calendar handles weekends, holidays, early closes and DST.
+Closed scans return `outside_market_hours` without fetching the feed or quotes;
+the scheduler keeps checking every five minutes. Market hours are checked again
+before claiming a symbol and immediately before broker submission. If the market
+closes after the claim, that symbol is recorded as skipped and remains deduplicated.
 
 The `top_bullish_trades` table is created automatically. It records the flow,
 quote, order parameters, broker IDs/response, timestamps and submission status.

@@ -17,13 +17,75 @@ spec.loader.exec_module(module)
 ITEM = {'symbol': 'AAPL', 'total_premium': 25545729.7, 'trade_count': 1277}
 
 
+@pytest.mark.parametrize('elapsed,expected_delay', [(10, 290), (650, 250)])
+def test_scheduler_retries_failed_scan_and_skips_missed_ticks(
+    tmp_path, monkeypatch, elapsed, expected_delay,
+):
+    bot = object.__new__(module.MainTopBullish)
+    bot.run = Mock(side_effect=[RuntimeError('private payload'), []])
+    monkeypatch.setattr(module.time, 'monotonic', Mock(side_effect=[0, elapsed, 910]))
+    sleep = Mock(side_effect=[None, KeyboardInterrupt])
+    monkeypatch.setattr(module.time, 'sleep', sleep)
+    bot.run_forever(limit=3)
+    assert bot.run.call_count == 2
+    bot.run.assert_called_with(limit=3)
+    assert sleep.call_args_list[0].args == (expected_delay,)
+
+
 def runner(tmp_path, *, dry_run=True, items=None, buy=None):
     settings = SimpleNamespace(database_path=str(tmp_path / 'test.sqlite3'), dry_run=dry_run, max_notional_usd=250)
-    stock = SimpleNamespace(get_account_id=lambda: 'fake-account', buy_stock=buy)
+    settings.account_number = 'test-number'
+    stock = SimpleNamespace(get_account_id=lambda **kwargs: 'fake-account', buy_stock=buy)
     loader = Mock(return_value=stock)
     feed = SimpleNamespace(fetch=lambda limit: items or [ITEM])
     quote = Mock(return_value={'price': 200, 'last_trade_time': 1, 'source': 'fake'})
-    return module.MainTopBullish(settings=settings, feed=feed, stock_loader=loader, quote_provider=quote)
+    return module.MainTopBullish(settings=settings, feed=feed, stock_loader=loader,
+                                quote_provider=quote, market_open=lambda: True)
+
+
+@pytest.mark.parametrize('timestamp,expected', [
+    ('2026-09-14T13:29:59+00:00', False),
+    ('2026-09-14T13:30:00+00:00', True),
+    ('2026-09-14T20:00:00+00:00', False),
+    ('2026-09-12T15:00:00+00:00', False),
+    ('2026-09-07T15:00:00+00:00', False),
+    ('2026-11-27T17:59:59+00:00', True),
+    ('2026-11-27T18:00:00+00:00', False),
+    ('2026-12-01T14:30:00+00:00', True),
+])
+def test_bullish_exchange_hours(timestamp, expected):
+    calendar = module.ExitCalendar(exit_time='09:35', timezone='America/New_York')
+    assert calendar.is_open(datetime.fromisoformat(timestamp)) == expected
+
+
+def test_closed_market_skips_feed_and_quotes(tmp_path):
+    bot = runner(tmp_path)
+    bot.market_open = lambda: False
+    bot.feed.fetch = Mock()
+    assert bot.run()[0]['reason'] == 'outside_market_hours'
+    assert bot.process(ITEM)['reason'] == 'outside_market_hours'
+    bot.feed.fetch.assert_not_called()
+    bot.quote_provider.assert_not_called()
+    bot.stock_loader.assert_not_called()
+
+
+def test_market_closes_during_quote_without_claim(tmp_path):
+    bot = runner(tmp_path, dry_run=False)
+    bot.market_open = Mock(side_effect=[True, True, False])
+    assert bot.run()[0]['reason'] == 'outside_market_hours'
+    assert not bot.ledger.contains('bullish:AAPL', 'AAPL')
+    bot.stock_loader.assert_not_called()
+
+
+def test_market_closes_at_submission_callback(tmp_path):
+    submitted = Mock()
+    def buy(**kwargs):
+        kwargs['before_submit']({})
+        submitted()
+    bot = runner(tmp_path, dry_run=False, buy=buy)
+    bot.market_open = Mock(side_effect=[True, True, True, False])
+    assert bot.run()[0]['reason'] == 'outside_market_hours'
+    submitted.assert_not_called()
 
 
 def test_dry_run_persists_and_skips_symbol(tmp_path):
