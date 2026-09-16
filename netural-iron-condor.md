@@ -1,5 +1,9 @@
 # Neutral ideas and iron-condor flow
 
+Exit percentages are configurable with `IRON_CONDOR_PROFIT_PERCENT` and
+`IRON_CONDOR_STOP_LOSS_PERCENT` in `.env`. Percentages shown below are defaults;
+restart services after editing. Existing orders are unchanged.
+
 Updated 2026-09-16. **Valid neutral Optionomics ideas now reach the Webull paper
 iron-condor submitter from `app/main.py`.** The former unconditional neutral skip
 has been removed. `main-option.py` also delegates neutral submission to this
@@ -168,3 +172,19 @@ No broker orders were placed during implementation. Account permissions, market
 data availability, actual response fields and bracket acceptance still require
 sandbox validation. The full test suite also has previously recorded failures
 in the separate bullish runner's market-hours interface.
+
+## Account selection
+
+`OPTIONS_MARGIN_ACCOUNT_NUMBER` in `.env` selects the shared individual margin
+account for bearish PUT and iron-condor submissions. The broker account list
+must contain exactly one matching account number with a valid API account ID;
+missing configuration or unmatched/ambiguous accounts stop submission. No
+first-account fallback is used. Restart services after changing this setting.
+The account type and permissions have not been verified with a live lookup.
+
+This is the same shared `get_account_id(account_number=...)` lookup used by
+`main-top-bullish.py`, which reads `TOP_BULLISH_ACCOUNT_NUMBER`. Setting both
+variables to the same value routes these strategies to the same account.
+The local values matched when checked on 2026-09-16; no live lookup was made.
+See [the account comparison](README.md#strategy-account-selection) for the
+separate main-service bullish/CALL paths and restart requirements.

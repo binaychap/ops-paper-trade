@@ -164,7 +164,14 @@ DRY_RUN=true
 OPTIONOMICS_POLL_ENABLED=false
 NEXT_DAY_EXIT_ENABLED=false
 DATABASE_PATH=/var/lib/ops-paper-trade/bot.sqlite3
-TOP_BULLISH_ACCOUNT_NUMBER=YOUR_SANDBOX_ACCOUNT_NUMBER
+TOP_BULLISH_ACCOUNT_NUMBER=YOUR_SANDBOX_MARGIN_ACCOUNT_NUMBER
+OPTIONS_MARGIN_ACCOUNT_NUMBER=YOUR_SANDBOX_MARGIN_ACCOUNT_NUMBER
+BULLISH_PROFIT_PERCENT=10
+BULLISH_STOP_LOSS_PERCENT=5
+BEARISH_PROFIT_PERCENT=20
+BEARISH_STOP_LOSS_PERCENT=10
+IRON_CONDOR_PROFIT_PERCENT=10
+IRON_CONDOR_STOP_LOSS_PERCENT=5
 ```
 
 Also copy your required `OPTIONOMICS_EMAIL`, `OPTIONOMICS_API_KEY`,
@@ -176,11 +183,23 @@ chmod 600 .env
 sudo install -d -m 700 -o "$(id -un)" -g "$(id -gn)" /var/lib/ops-paper-trade
 ```
 
-The shared broker currently hardcodes the Webull sandbox endpoint. The bullish
-runner selects `TOP_BULLISH_ACCOUNT_NUMBER` explicitly. Main strategy callers
-still use the first returned account; accepting the bullish setting in
-`main.py.Settings` does not change that selection. Verify both destinations
-before enabling both strategies.
+The shared broker currently hardcodes the Webull sandbox endpoint. The dedicated
+bullish runner selects `TOP_BULLISH_ACCOUNT_NUMBER`; bearish PUT and neutral
+iron-condor submissions select `OPTIONS_MARGIN_ACCOUNT_NUMBER`. Set both to the
+same intended account number when all three should use one margin account.
+Both routes use the same exact, unique account-number lookup and submit with
+the returned API account ID. Missing configuration or an unmatched/ambiguous
+account stops submission, without falling back to the first account.
+
+The main service's bullish stock path and the separate option runner's CALL
+path still select the first returned account. Verify those destinations
+separately if you enable them. Account type, permissions and sandbox availability
+have not been verified by the local configuration comparison. Dry runs do not
+validate account access. See [strategy account selection](README.md#strategy-account-selection).
+
+The percentage values above are defaults; `10` means 10%. Restart affected
+services after changing account or percentage settings. Existing orders are
+unchanged, and account changes do not reset ledger reservations or deduplication.
 
 ### Transfer existing SQLite history
 

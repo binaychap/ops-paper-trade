@@ -1,5 +1,9 @@
 # Bearish direction and execution flow
 
+Exit percentages are configurable with `BEARISH_PROFIT_PERCENT` and
+`BEARISH_STOP_LOSS_PERCENT` in `.env`. Percentages shown below are defaults;
+restart services after editing. Existing orders are unchanged.
+
 This documents the current `app/main.py` polling path, verified from source on
 2026-09-16. Direction comes from the Optionomics feed; the application does not
 calculate a bearish signal from market prices.
@@ -138,3 +142,19 @@ mocked data and broker clients. Dry runs still return before quote retrieval.
 Related regression coverage lives in
 [tests/test_apply_risk_gates.py](tests/test_apply_risk_gates.py), including bearish
 level validation, PUT builder selection, and submission routing.
+
+## Account selection
+
+`OPTIONS_MARGIN_ACCOUNT_NUMBER` in `.env` selects the shared individual margin
+account for bearish PUT and iron-condor submissions. The broker account list
+must contain exactly one matching account number with a valid API account ID;
+missing configuration or unmatched/ambiguous accounts stop submission. No
+first-account fallback is used. Restart services after changing this setting.
+The account type and permissions have not been verified with a live lookup.
+
+This is the same shared `get_account_id(account_number=...)` lookup used by
+`main-top-bullish.py`, which reads `TOP_BULLISH_ACCOUNT_NUMBER`. Setting both
+variables to the same value routes these strategies to the same account.
+The local values matched when checked on 2026-09-16; no live lookup was made.
+See [the account comparison](README.md#strategy-account-selection) for the
+separate main-service bullish/CALL paths and restart requirements.

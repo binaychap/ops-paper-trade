@@ -519,3 +519,62 @@ A trade ID or symbol already in this table is always skipped, even after a dry
 run or failure. Use a separate preview database as above. Deduplication applies
 to this runner's table, not other strategies or broker holdings. Ambiguous
 submission failures are retained as `submission_unknown` for manual review.
+
+## Configurable exit percentages
+
+Set these in `.env` (values are percentages: `10` means 10%):
+
+```dotenv
+BULLISH_PROFIT_PERCENT=10
+BULLISH_STOP_LOSS_PERCENT=5
+BEARISH_PROFIT_PERCENT=20
+BEARISH_STOP_LOSS_PERCENT=10
+IRON_CONDOR_PROFIT_PERCENT=10
+IRON_CONDOR_STOP_LOSS_PERCENT=5
+```
+
+These defaults preserve the existing behavior. Bullish applies to the main stock
+submitter, bullish flow runner, and separate option runner's CALL brackets.
+Bearish applies to PUT brackets. For long entries, target is entry ×
+`(1 + profit / 100)` and stop is entry × `(1 - stop / 100)`. Iron-condor closing
+debits are credit × `(1 - profit / 100)` and credit × `(1 + stop / 100)`.
+Existing price rounding still applies; percentages use the entry reference/limit,
+not a recalculated actual fill.
+
+Values must be finite and positive. Bullish/bearish stop percentages and the
+iron-condor profit percentage must be below 100. Invalid values prevent settings
+initialization. Process environment values override `.env`. Restart the running
+services after changing these values; existing broker orders are not modified.
+
+## Strategy account selection
+
+| Execution path | Account setting |
+| --- | --- |
+| `main-top-bullish.py` stock runner | `TOP_BULLISH_ACCOUNT_NUMBER` |
+| Bearish PUT via `main.py` or `main-option.py` | `OPTIONS_MARGIN_ACCOUNT_NUMBER` |
+| Neutral iron condor via either main entry point | `OPTIONS_MARGIN_ACCOUNT_NUMBER` |
+
+These paths share `app.webull_broker.get_account_id(account_number=...)`.
+Each trims the configured account number, requires a nonempty value, queries the
+broker account list and requires exactly one matching `account_number` with an
+API `account_id`. Missing or ambiguous matches stop submission; these paths do
+not fall back to the first account. The returned API ID is used in the order.
+Dry runs do not perform this account lookup.
+
+Set both variables to the same intended account number to use one account for
+all three paths. They remain separate settings so they can also select different
+accounts. The local configuration was compared and the two values matched on
+2026-09-16; actual account identifiers remain only in local `.env`. No live
+account lookup or account-type/permission verification was performed.
+
+This applies to the dedicated bullish flow runner, not every bullish caller:
+the main service's bullish stock path and `main-option.py`'s CALL path still use
+the first returned account. They do not read `TOP_BULLISH_ACCOUNT_NUMBER` for
+selection. See [deployment.md](deployment.md) before enabling multiple runners.
+
+Process environment overrides `.env`. Restart the affected services after an
+account change. Existing orders and ledger reservations are not moved or reset.
+The separate strategies do not share a complete position/deduplication guard.
+
+For the dedicated bullish runner’s end-to-end diagram, account selection,
+configurable exits and ledger behavior, see [bullish.md](bullish.md).

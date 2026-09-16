@@ -18,7 +18,8 @@ if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+from app.strategy_settings import StrategyExitSettings, exit_percentages
 
 from app.bullish_ledger import BullishLedger
 from app.webull_quotes import QuoteError, current_stock_quote
@@ -28,7 +29,7 @@ from app.webull_submitter import _load_webull_stock_module
 logger = logging.getLogger(__name__)
 
 
-class BullishSettings(BaseSettings):
+class BullishSettings(StrategyExitSettings):
     account_number: str = Field(default='', alias='TOP_BULLISH_ACCOUNT_NUMBER')
     dry_run: bool = Field(default=True, alias='DRY_RUN')
     database_path: str = Field(default='bot.sqlite3', alias='DATABASE_PATH')
@@ -122,7 +123,9 @@ class MainTopBullish:
             logger.error('Webull quote for %s failed: %s', symbol, detail)
             return {'symbol': symbol, 'status': 'skipped', 'reason': f'Quote unavailable: {detail}'}
         entry = round(float(quote['price']), 2)
-        stop, target = round(entry * 0.95, 2), round(entry * 1.10, 2)
+        profit_percent, stop_loss_percent = exit_percentages(self.settings, "bullish")
+        stop = round(entry * (1 - stop_loss_percent / 100), 2)
+        target = round(entry * (1 + profit_percent / 100), 2)
         if not math.isfinite(entry) or not 0 < stop < entry < target:
             raise ValueError(f'{symbol}: invalid bracket prices')
         if entry > self.settings.max_notional_usd:

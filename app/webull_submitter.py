@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from app.strategy_settings import exit_percentages, options_margin_account_id
+
 
 def _load_webull_stock_module() -> Any:
     module_path = Path(__file__).resolve().parent / "webull-buy-combo-stock.py"
@@ -72,6 +74,7 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
         reference_level = max(float(d.get("notional_usd") or 0.0) / 100.0, 1.0)
 
     if action == "sell_short":
+        profit_percent, stop_loss_percent = exit_percentages(settings, "bearish")
         from app.bearish_option_executor import BearishPutOptionExecutor
         option_module = _load_webull_option_module()
         executor = BearishPutOptionExecutor(module=option_module)
@@ -79,13 +82,13 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
         strike = round(float(reference_level) / 5.0) * 5.0
         try:
             order_result = executor.submit(
-                account_id=option_module.get_account_id(),
+                account_id=options_margin_account_id(option_module, settings),
                 symbol=symbol,
                 strike=strike,
                 expiration=expiry,
                 quantity=1,
-                profit_percent=20,
-                stop_loss_percent=10,
+                profit_percent=profit_percent,
+                stop_loss_percent=stop_loss_percent,
             )
         except Exception as exc:
             # If no option contracts are available, treat this idea as skipped.
@@ -129,11 +132,13 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
             option_module = _load_webull_option_module()
             executor = IronCondorOptionExecutor(module=option_module)
             expiry = (datetime.now(UTC) + timedelta(days=30)).strftime("%Y-%m-%d")
+            profit_percent, stop_loss_percent = exit_percentages(settings, "iron_condor")
             result = executor.submit(
-                account_id=option_module.get_account_id(), symbol=symbol,
+                account_id=options_margin_account_id(option_module, settings), symbol=symbol,
                 expiration=expiry, reference_price=payload.entry_price,
                 max_risk_usd=min(float(d.get("notional_usd") or 0), settings.max_notional_usd),
                 exit_time_in_force="GTC", quantity=1, before_submit=persist_before_submit,
+                profit_percent=profit_percent, stop_loss_percent=stop_loss_percent,
             )
         except AlreadySubmitted:
             return {"skipped": True, "reason": "Iron-condor attempt already recorded; reconcile saved event before retrying"}
@@ -169,8 +174,9 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
         else max(float(d.get("notional_usd") or 0.0) / 100.0, 0.01)
     )
     entry_price = None if execute_at_market else reference
-    stop_price = round(reference * 0.95, 2)
-    target_price = round(reference * 1.10, 2)
+    profit_percent, stop_loss_percent = exit_percentages(settings, "bullish")
+    stop_price = round(reference * (1 - stop_loss_percent / 100), 2)
+    target_price = round(reference * (1 + profit_percent / 100), 2)
 
     order_kwargs = dict(
         account_id=account_id,

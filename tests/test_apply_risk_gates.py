@@ -461,7 +461,8 @@ def test_submit_paper_order_routes_bearish_decisions_to_put_executor(monkeypatch
 
     class FakeBrokerModule:
         @staticmethod
-        def get_account_id():
+        def get_account_id(**kwargs):
+            assert kwargs == {"account_number": "test-margin"}
             return "acct-option-1"
 
     class FakeExecutor:
@@ -489,7 +490,7 @@ def test_submit_paper_order_routes_bearish_decisions_to_put_executor(monkeypatch
         rationale="bearish",
         risk_notes=[],
     )
-    settings = Settings(DRY_RUN=False)
+    settings = Settings(DRY_RUN=False, OPTIONS_MARGIN_ACCOUNT_NUMBER="test-margin")
     payload = SimpleNamespace(entry_price=100.0, target_price=90.0, stop_price=105.0)
 
     monkeypatch.setattr(webull_submitter, "_load_webull_option_module", lambda: FakeBrokerModule())

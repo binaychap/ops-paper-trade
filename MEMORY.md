@@ -1,5 +1,40 @@
 # Ops Paper Trade — project memory
 
+## Options account selection (2026-09-16)
+
+README, deployment.md and both strategy documents now explain shared exact
+account lookup and the TOP_BULLISH_ACCOUNT_NUMBER / OPTIONS_MARGIN_ACCOUNT_NUMBER
+mapping. A read-only local comparison found the configured values equal;
+identifiers are intentionally omitted. Main bullish stock and separate CALL
+submission still use first-account selection. No live account verification.
+
+Bearish PUT and iron-condor submissions now require OPTIONS_MARGIN_ACCOUNT_NUMBER
+from .env/environment. Shared settings hide it from repr. The shared submitter
+and main-option.py bearish branch use exact unique account-number lookup;
+missing configuration, missing matches or ambiguous matches prevent submission,
+without first-account fallback. Bullish account routing is unchanged. The user’s
+chosen value is saved only in local .env, not here or in example configuration.
+Account type and permissions are not live-verified. Existing ledger reservations
+are not reset by account changes. Mocked checks: 90 focused tests passed;
+no broker orders placed. Restart running services to apply the setting.
+
+## Strategy exit configuration (2026-09-16)
+
+`app/strategy_settings.py` defines validated shared percentage settings inherited
+by main.Settings, main-option.Settings and BullishSettings. `.env` and
+`.env.example` now contain BULLISH_PROFIT_PERCENT=10,
+BULLISH_STOP_LOSS_PERCENT=5, BEARISH_PROFIT_PERCENT=20,
+BEARISH_STOP_LOSS_PERCENT=10, IRON_CONDOR_PROFIT_PERCENT=10 and
+IRON_CONDOR_STOP_LOSS_PERCENT=5. Other .env values were preserved.
+Main stock submission, bullish flow stock runner, separate CALL/PUT option
+runner and shared neutral submitter pass the configured percentages to their
+pricing/order builders. Low-level helper defaults remain available for direct
+callers. All values must be finite and positive; long stop percentages and
+condor profit must be below 100. Restart services after changes; existing
+orders are not repriced. Process environment overrides .env. Tests with custom
+percentages, dotenv loading/override and invalid values: 85 focused tests passed.
+No broker orders placed.
+
 ## Neutral iron-condor submission (2026-09-16)
 
 Neutral feed ideas now select iron_condor with internal action buy and require
@@ -297,6 +332,11 @@ replaces core client ERROR dumps (which can contain signed request headers) with
 a short message. Application errors retain the actionable reason.
 
 ## Bullish flow stock runner
+
+`bullish.md` documents the dedicated runner end to end, with a Mermaid diagram,
+account lookup, configured exits, permanent claims and submission failure states.
+Source review confirms no current market-hours gate; total_premium float coercion
+accepts booleans, while trade_count rejects them. Documentation-only update.
 
 Bullish live submission requires `TOP_BULLISH_ACCOUNT_NUMBER` in environment
 or `.env`. Before claiming a symbol, the runner resolves an exact, unique

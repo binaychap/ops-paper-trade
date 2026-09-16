@@ -153,10 +153,10 @@ def setup_submission(monkeypatch, tmp_path, *, timeout=False):
             raise TimeoutError('mock lost response')
         return SimpleNamespace(status_code=200, json=lambda: {'order_id': 'test'})
 
-    module = SimpleNamespace(get_account_id=lambda: 'test', get_trade_client=lambda: SimpleNamespace(order_v3=SimpleNamespace(place_order=place)))
+    module = SimpleNamespace(get_account_id=lambda **kwargs: 'test', get_trade_client=lambda: SimpleNamespace(order_v3=SimpleNamespace(place_order=place)))
     monkeypatch.setattr(webull_submitter, '_load_webull_option_module', lambda: module)
     monkeypatch.setattr(mod, 'get_data_client', lambda: data)
-    settings = SimpleNamespace(dry_run=False, max_notional_usd=250, database_path=str(database), force_reprocess=False)
+    settings = SimpleNamespace(dry_run=False, max_notional_usd=250, database_path=str(database), force_reprocess=False, options_margin_account_number="test-margin")
     decision = dict(action='buy', symbol='AAPL', strategy='iron_condor', notional_usd=250)
     payload = SimpleNamespace(direction='neutral', entry_price=100, target_price=90, stop_price=110)
     return settings, decision, payload, calls
@@ -279,3 +279,13 @@ def test_collapsed_exit_prices_block_submission():
     quotes[2].update(bid='1.1', ask='1.2')
     with pytest.raises(CondorValidationError, match='collapse'):
         submit(rows, quotes, max_risk_usd=1000)
+
+
+def test_configured_condor_exit_percentages(monkeypatch, tmp_path):
+    from app.webull_submitter import submit_paper_order
+    settings, decision, payload, calls = setup_submission(monkeypatch, tmp_path)
+    settings.iron_condor_profit_percent = 20
+    settings.iron_condor_stop_loss_percent = 10
+    result = submit_paper_order(decision, settings, 'custom-percentages', payload)
+    assert result['profit_debit'] == 2.4
+    assert result['stop_debit'] == 3.3

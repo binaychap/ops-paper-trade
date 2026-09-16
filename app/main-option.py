@@ -22,7 +22,8 @@ from app.optionomics_client import fetch_trade_ideas
 
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+from app.strategy_settings import StrategyExitSettings, exit_percentages, options_margin_account_id
 from webull.core.client import ApiClient
 from webull.data.data_client import DataClient
 
@@ -50,7 +51,7 @@ def color_error(value: str | None) -> str:
     return f"\033[31m{text}\033[0m"
 
 
-class Settings(BaseSettings):
+class Settings(StrategyExitSettings):
     """Runtime settings loaded from environment variables."""
     dry_run: bool = Field(default=True, alias="DRY_RUN")
     max_notional_usd: float = Field(default=250.0, gt=0.0, alias="MAX_NOTIONAL_USD")
@@ -1060,8 +1061,8 @@ def submit_paper_order(
         }
 
     webull_module = _load_webull_combo_module()
-    account_id = webull_module.get_account_id()
-    print("Using account:", account_id)
+    account_id = (options_margin_account_id(webull_module, settings)
+                  if decision.action == "sell_short" else webull_module.get_account_id())
 
     reference_level = None
     if payload is not None:
@@ -1106,6 +1107,9 @@ def submit_paper_order(
     entry_limit = max(float(selected_strike) * 0.08, 1.0)
     quantity = 1
 
+    profit_percent, stop_loss_percent = exit_percentages(
+        settings, "bullish" if decision.action == "buy" else "bearish"
+    )
     if decision.action == "buy":
         order_result = webull_module.buy_call_with_bracket(
             account_id=account_id,
@@ -1114,8 +1118,8 @@ def submit_paper_order(
             expiration=selected_expiration,
             quantity=quantity,
             entry_limit=entry_limit,
-            profit_percent=10,
-            stop_loss_percent=5,
+            profit_percent=profit_percent,
+            stop_loss_percent=stop_loss_percent,
         )
     else:
         from app.bearish_option_executor import BearishPutOptionExecutor
@@ -1127,8 +1131,8 @@ def submit_paper_order(
             strike=selected_strike,
             expiration=selected_expiration,
             quantity=quantity,
-            profit_percent=20,
-            stop_loss_percent=10,
+            profit_percent=profit_percent,
+            stop_loss_percent=stop_loss_percent,
         )
 
     logger.info(

@@ -28,7 +28,8 @@ from app.records import router as records_router
 
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
+from app.strategy_settings import StrategyExitSettings
 
 logger = logging.getLogger("optionomics_bot")
 logger.setLevel(logging.INFO)
@@ -54,7 +55,7 @@ def color_error(value: str | None) -> str:
     return f"\033[31m{text}\033[0m"
 
 
-class Settings(BaseSettings):
+class Settings(StrategyExitSettings):
     """Runtime settings loaded from environment variables."""
     dry_run: bool = Field(default=True, alias="DRY_RUN")
     max_notional_usd: float = Field(default=250.0, gt=0.0, alias="MAX_NOTIONAL_USD")
