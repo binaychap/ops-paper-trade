@@ -60,7 +60,8 @@ def test_put_bracket_quotes_selected_contract_and_submits_20_10_exits(monkeypatc
         assert kwargs == {'option_type': 'PUT'}
         return '2026-09-18', 100.0, SYMBOL
 
-    def ask(symbol):
+    def ask(symbol, **kwargs):
+        assert kwargs['max_age_seconds'] == 1200
         assert symbol == SYMBOL
         return {'price': 2.0}
 
@@ -71,7 +72,7 @@ def test_put_bracket_quotes_selected_contract_and_submits_20_10_exits(monkeypatc
     monkeypatch.setattr(module, '_find_valid_contract', contract)
     monkeypatch.setattr('app.webull_quotes.current_option_ask', ask)
     client = SimpleNamespace(order_v3=SimpleNamespace(place_order=place_order))
-    module.buy_put_with_bracket('test', 'AAPL', 103, '2026-09-21', 1, trade_client=client)
+    module.buy_put_with_bracket('test', 'AAPL', 103, '2026-09-21', 1, trade_client=client, quote_max_age_seconds=1200)
     entry, profit, stop = calls
     assert (entry['side'], entry['position_intent'], entry['order_type']) == ('BUY', 'BUY_TO_OPEN', 'LIMIT')
     assert entry['limit_price'] == '2.00'
@@ -86,7 +87,7 @@ def test_quote_failure_prevents_order_submission(monkeypatch):
     module = load_builder()
     monkeypatch.setattr(module, '_find_valid_contract', lambda *a, **k: ('2026-09-18', 100, SYMBOL))
 
-    def unavailable(symbol):
+    def unavailable(symbol, **kwargs):
         raise QuoteError('stale')
 
     monkeypatch.setattr('app.webull_quotes.current_option_ask', unavailable)
@@ -96,6 +97,11 @@ def test_quote_failure_prevents_order_submission(monkeypatch):
 
 def test_contract_lookup_excludes_calls(monkeypatch):
     module = load_builder()
+    class FixedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+    monkeypatch.setattr(module, 'datetime', FixedClock)
     rows = [
         {'option_type': 'PUT', 'expiration': '2026-09-18', 'strike': 100, 'symbol': SYMBOL},
         {'option_type': 'CALL', 'expiration': '2026-09-18', 'strike': 100, 'symbol': 'CALL'},
@@ -110,3 +116,80 @@ def test_contract_lookup_excludes_calls(monkeypatch):
     assert module._find_valid_contract('AAPL', '2026-09-18', 100, option_type='PUT') == (
         '2026-09-18', 100.0, SYMBOL,
     )
+
+
+@pytest.mark.parametrize('offset,fragment', [(-61, 'age 61.0 seconds'), (6, 'future-dated by 6.0 seconds'), (float('nan'), 'nonfinite quote_time')])
+def test_option_quote_timestamp_diagnostics(offset, fragment):
+    row = {'symbol': SYMBOL, 'ask': '2.00', 'quote_time': (NOW.timestamp() + offset) * 1000}
+    with pytest.raises(QuoteError, match=fragment) as error:
+        current_option_ask(SYMBOL, data_client=quote_client([row]), now=NOW)
+    assert SYMBOL in str(error.value)
+
+
+def test_bearish_quote_error_returns_skip(monkeypatch):
+    from app import webull_submitter
+    def stale(self, **kwargs):
+        raise QuoteError('Option quote is stale: age 61 seconds')
+    monkeypatch.setattr('app.bearish_option_executor.BearishPutOptionExecutor.submit', stale)
+    module = SimpleNamespace(get_account_id=lambda **kw: 'test')
+    monkeypatch.setattr(webull_submitter, '_load_webull_option_module', lambda: module)
+    settings = SimpleNamespace(dry_run=False, options_margin_account_number='test-margin')
+    result = webull_submitter.submit_paper_order(
+        {'action': 'sell_short', 'symbol': 'AAPL', 'notional_usd': 250}, settings, 'test',
+        SimpleNamespace(entry_price=100, target_price=90, stop_price=110, direction='bearish'))
+    assert result == {'skipped': True, 'reason': 'Option quote is stale: age 61 seconds'}
+
+
+def test_chain_expiry_uses_listed_put_dates_without_five_day_filter(monkeypatch):
+    from datetime import timedelta
+    module = load_builder()
+    tomorrow = (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
+    later = (datetime.now(UTC).date() + timedelta(days=8)).isoformat()
+    yesterday = (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
+    rows = [
+        {'option_type': 'PUT', 'expiration': later, 'strike': 100, 'symbol': 'later'},
+        {'option_type': 'PUT', 'expiration': yesterday, 'strike': 100, 'symbol': 'expired'},
+        {'option_type': 'PUT', 'expiration': tomorrow, 'strike': 100, 'symbol': 'nearest'},
+    ]
+    requests = []
+    def contracts(**kwargs):
+        requests.append(kwargs)
+        return SimpleNamespace(status_code=200, json=lambda: rows)
+    api = SimpleNamespace(add_endpoint=lambda *a: None, set_stream_logger=lambda **k: None)
+    monkeypatch.setenv('WEBULL_APP_KEY', 'test')
+    monkeypatch.setenv('WEBULL_APP_SECRET', 'test')
+    monkeypatch.setattr(module, 'ApiClient', lambda *a: api)
+    monkeypatch.setattr(module, 'DataClient', lambda *a: SimpleNamespace(instrument=SimpleNamespace(get_option_contracts=contracts)))
+    assert module._find_valid_contract('AAPL', None, 100, option_type='PUT') == (tomorrow, 100, 'nearest')
+    assert requests == [dict(category='US_OPTION', underlying_symbols='AAPL', page_size=500, option_type='PUT')]
+    rows.clear()
+    with pytest.raises(RuntimeError, match='No option contracts'):
+        module._find_valid_contract('AAPL', None, 100, option_type='PUT')
+
+
+def test_expiry_resolver_uses_next_listed_expiration_for_weekend():
+    from app.option_expiration import resolve_option_expiry
+    assert resolve_option_expiry('2026-09-19', ['2026-09-18', '2026-09-21', '2026-09-25']) == '2026-09-21'
+    assert resolve_option_expiry('2026-09-21', ['2026-09-21']) == '2026-09-21'
+    with pytest.raises(ValueError, match='No listed'):
+        resolve_option_expiry('2026-09-19', ['2026-09-18'])
+
+
+@pytest.mark.parametrize('age,limit,accepted', [(901.5, 60, False), (901.5, 1200, True), (1200, 1200, True), (1201, 1200, False), (-6, 1200, False)])
+def test_configurable_delayed_quote_limit(age, limit, accepted):
+    row = {'symbol': SYMBOL, 'ask': '1.13', 'quote_time': (NOW.timestamp() - age) * 1000}
+    kwargs = dict(data_client=quote_client([row]), now=NOW, max_age_seconds=limit)
+    if accepted:
+        assert current_option_ask(SYMBOL, **kwargs)['price'] == 1.13
+    else:
+        with pytest.raises(QuoteError):
+            current_option_ask(SYMBOL, **kwargs)
+
+
+def test_executor_passes_configured_quote_limit():
+    from app.bearish_option_executor import BearishPutOptionExecutor
+    captured = {}
+    executor = BearishPutOptionExecutor(module=SimpleNamespace(buy_put_with_bracket=lambda **kw: captured.update(kw) or {}))
+    executor.submit(account_id='test', symbol='AAPL', strike=100, expiration=None,
+                    quantity=1, quote_max_age_seconds=1200)
+    assert captured['quote_max_age_seconds'] == 1200

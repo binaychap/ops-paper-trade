@@ -53,7 +53,7 @@ flowchart TD
     J -->|No| K[Resolve sandbox account and request listed contracts]
     K --> L[Select four standard contracts at one expiry with equal wings]
     L --> M[Fetch all four bid and ask snapshots]
-    M --> N{Fresh valid quotes, positive credit and risk within budget?}
+    M --> N{All four quotes within configured age limit, valid prices, positive credit and risk within budget?}
     N -->|No| SKIP
     N -->|Yes| O[Build SELL LIMIT entry and two four-leg BUY exits]
     O --> P{Atomically reserve fingerprint in events?}
@@ -92,7 +92,13 @@ contracts must share an expiry and have distinct ordered strikes.
 
 All four quotes are requested together. Each must match the selected contract,
 have a positive bid and ask with `bid <= ask`, and a `quote_time` no older than
-60 seconds and no more than five seconds ahead of the validation clock.
+`IRON_CONDOR_QUOTE_MAX_AGE_SECONDS` and no more than five seconds ahead of the
+validation clock. This positive integer setting defaults to 60 seconds. Local
+`.env` uses `IRON_CONDOR_QUOTE_MAX_AGE_SECONDS=1200` (20 minutes) for delayed
+sandbox paper testing. Restart the service after changing it. All four legs
+must pass; one quote outside the limit blocks the entire order before submission.
+Credit and exit prices calculated from delayed quotes reflect delayed premiums.
+This setting is independent of `BEARISH_QUOTE_MAX_AGE_SECONDS` and stock limits.
 
 ```text
 entry credit = short put bid + short call bid - long put ask - long call ask
@@ -108,11 +114,11 @@ The executor skips an over-budget selection rather than searching narrower wings
 
 ## Entry and exits
 
-| Order | Overall side | Type | Price | Duration |
-| --- | --- | --- | --- | --- |
-| MASTER | SELL, SELL_TO_OPEN | LIMIT | Net entry credit | DAY |
-| STOP_PROFIT | BUY | LIMIT | Entry credit × 0.90 | GTC |
-| STOP_LOSS | BUY | STOP_LOSS | Entry credit × 1.05 | GTC |
+| Order       | Overall side       | Type      | Price               | Duration |
+| ----------- | ------------------ | --------- | ------------------- | -------- |
+| MASTER      | SELL, SELL_TO_OPEN | LIMIT     | Net entry credit    | DAY      |
+| STOP_PROFIT | BUY                | LIMIT     | Entry credit × 0.90 | GTC      |
+| STOP_LOSS   | BUY                | STOP_LOSS | Entry credit × 1.05 | GTC      |
 
 Both exits reverse **all four legs**, with matching quantities, strikes and
 expiry. Position intent is specified only on the master, consistent with the
@@ -127,11 +133,11 @@ collapses the target, entry and stop ordering, the executor skips the setup.
 For a reference of 100, a five-point wing and the listed strikes below:
 
 | Contract | Entry leg | Both exit legs |
-| --- | --- | --- |
-| 90 PUT | BUY | SELL |
-| 95 PUT | SELL | BUY |
-| 105 CALL | SELL | BUY |
-| 110 CALL | BUY | SELL |
+| -------- | --------- | -------------- |
+| 90 PUT   | BUY       | SELL           |
+| 95 PUT   | SELL      | BUY            |
+| 105 CALL | SELL      | BUY            |
+| 110 CALL | BUY       | SELL           |
 
 A 3.00 entry credit sets a 2.70 profit debit and 3.15 stop debit. The maximum
 spread loss for one combo is 200 dollars before fees. Exits are based on the

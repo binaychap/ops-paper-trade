@@ -4,6 +4,8 @@ from pydantic_settings import BaseSettings
 
 
 class StrategyExitSettings(BaseSettings):
+    iron_condor_quote_max_age_seconds: int = Field(default=60, gt=0, alias="IRON_CONDOR_QUOTE_MAX_AGE_SECONDS")
+    bearish_quote_max_age_seconds: int = Field(default=60, gt=0, alias="BEARISH_QUOTE_MAX_AGE_SECONDS")
     bullish_stock_account_number: str = Field(default="", alias="BULLISH_STOCK_ACCOUNT_NUMBER", repr=False)
     options_margin_account_number: str = Field(default="", alias="OPTIONS_MARGIN_ACCOUNT_NUMBER", repr=False)
     bullish_profit_percent: float = Field(default=10, gt=0, allow_inf_nan=False, alias='BULLISH_PROFIT_PERCENT')

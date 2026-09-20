@@ -289,3 +289,31 @@ def test_configured_condor_exit_percentages(monkeypatch, tmp_path):
     result = submit_paper_order(decision, settings, 'custom-percentages', payload)
     assert result['profit_debit'] == 2.4
     assert result['stop_debit'] == 3.3
+
+
+@pytest.mark.parametrize('age,limit,accepted', [(901.5, 60, False), (901.5, 1200, True), (1200, 1200, True), (1201, 1200, False), (-6, 1200, False)])
+def test_condor_configurable_quote_age(age, limit, accepted):
+    rows, quotes = market()
+    # One stale leg must block the entire combo.
+    quotes[2]['quote_time'] = (NOW.timestamp() - age) * 1000
+    if accepted:
+        result, calls = submit(rows, quotes, quote_max_age_seconds=limit)
+        assert len(calls) == 1
+        assert result['entry_credit'] == 3
+    else:
+        with pytest.raises(QuoteError, match='maximum'):
+            submit(rows, quotes, quote_max_age_seconds=limit,
+                   before_submit=lambda p: pytest.fail('Rejected quote reached submission'))
+
+
+def test_submitter_passes_condor_quote_limit(monkeypatch, tmp_path):
+    from app.webull_submitter import submit_paper_order
+    settings, decision, payload, calls = setup_submission(monkeypatch, tmp_path)
+    settings.iron_condor_quote_max_age_seconds = 1200
+    original = IronCondorOptionExecutor.submit
+    def checked(self, **kwargs):
+        assert kwargs['quote_max_age_seconds'] == 1200
+        return original(self, **kwargs)
+    monkeypatch.setattr(IronCondorOptionExecutor, 'submit', checked)
+    submit_paper_order(decision, settings, 'quote-limit', payload)
+    assert len(calls) == 1

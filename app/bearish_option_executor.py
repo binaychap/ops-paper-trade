@@ -40,11 +40,12 @@ class BearishPutOptionExecutor:
         account_id: str,
         symbol: str,
         strike: float,
-        expiration: str,
+        expiration: str | None,
         quantity: int,
         entry_limit: float | None = None,
         profit_percent: float = 20,
         stop_loss_percent: float = 10,
+        quote_max_age_seconds: int = 60,
     ) -> dict[str, Any]:
         builder = getattr(self.module, self.order_builder_name())
         return builder(
@@ -56,4 +57,5 @@ class BearishPutOptionExecutor:
             entry_limit=entry_limit,
             profit_percent=profit_percent,
             stop_loss_percent=stop_loss_percent,
+            quote_max_age_seconds=quote_max_age_seconds,
         )

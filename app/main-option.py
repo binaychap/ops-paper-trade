@@ -1044,7 +1044,7 @@ def submit_paper_order(
     fingerprint: str,
     payload: TradeIdea | None = None,
 ) -> dict[str, Any]:
-    if payload is not None and payload.direction == "neutral":
+    if payload is not None and payload.direction in {"neutral", "bearish"}:
         from app.webull_submitter import submit_paper_order as submit_shared_order
         return submit_shared_order(decision, settings, fingerprint, payload)
 

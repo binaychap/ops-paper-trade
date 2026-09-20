@@ -38,8 +38,18 @@ def current_option_ask(symbol, *, data_client=None, now=None, max_age_seconds=60
     age = (now or datetime.now(UTC)).timestamp() - timestamp
     if not math.isfinite(price) or price <= 0:
         raise QuoteError('Option ask must be positive and finite')
-    if not math.isfinite(age) or age < -5 or age > max_age_seconds:
-        raise QuoteError('Option quote is stale or has an invalid timestamp')
+    if not math.isfinite(age):
+        raise QuoteError(f'Option quote for {symbol} has a nonfinite quote_time')
+    if age < -5:
+        raise QuoteError(
+            f'Option quote for {symbol} is future-dated by {-age:.1f} seconds '
+            '(maximum 5 seconds); check quote_time units and system clock'
+        )
+    if age > max_age_seconds:
+        raise QuoteError(
+            f'Option quote for {symbol} is stale: age {age:.1f} seconds '
+            f'(maximum {max_age_seconds} seconds); quote_time is interpreted as Unix milliseconds'
+        )
     return {'price': price, 'quote_time': row['quote_time'], 'symbol': symbol, 'source': 'webull_ask'}
 
 

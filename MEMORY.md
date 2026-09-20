@@ -1,5 +1,46 @@
 # Ops Paper Trade — project memory
 
+## Delayed iron-condor quotes for paper testing (2026-09-20)
+
+IRON_CONDOR_QUOTE_MAX_AGE_SECONDS is a positive integer setting passed through
+shared neutral submission to the executor's four-leg quote validation. Code
+and .env.example default to 60 seconds; local .env uses 1200 for paper testing.
+Every leg must pass; invalid/crossed prices, nonfinite timestamps and quotes
+over five seconds in the future remain blocked. Age errors identify the leg,
+age and limit. Bearish and stock limits remain independent. Restart services
+after changing settings. Focused tests: 80 passed. No broker orders placed.
+
+## Delayed PUT quotes for paper testing (2026-09-20)
+
+BEARISH_QUOTE_MAX_AGE_SECONDS is a positive integer setting passed from shared
+settings through bearish submission/executor to the option ask validator. Code
+and .env.example default to 60; local .env is set to 1200 at user request for
+delayed sandbox data. Five-second future tolerance and price/timestamp checks
+remain unchanged. Stock and iron-condor quote age limits are unchanged. Restart
+services to load the setting. No broker requests or orders placed.
+
+## Listed bearish expiration selection (2026-09-16)
+
+Shared bearish submission no longer requests today plus five days. The bracket
+helper reads paginated PUT contracts and selects the earliest listed expiry
+after today UTC, excluding same-day/expired dates, then the closest strike.
+Explicit requested minima use exact-or-next-listed selection; no earlier-date
+fallback. Empty chains skip. The pure resolver is shared in option_expiration.py
+with webull-option-chain.py, whose chain loader no longer hardcodes CALL and
+whose expiry candidates are type-filtered. main-option.py bearish submission
+delegates to the shared submitter. CALL and iron-condor target-date policies
+remain separate. Focused tests: 91 passed; no broker requests or orders placed.
+
+## Bearish quote diagnostics (2026-09-16)
+
+Option ask timestamp failures now distinguish stale age/limit, future offset
+and nonfinite timestamps, with the contract symbol. The 60-second age limit
+and five-second future tolerance are unchanged. Shared bearish submission logs
+QuoteError and returns skipped, preserving the reason in the trade-idea ledger
+instead of recording a generic failed broker submission. No order is sent.
+Focused tests: 45 passed. The reported incident lacked the raw quote timestamp,
+so its exact cause remains unverified; no live broker call was made.
+
 ## Options account selection (2026-09-16)
 
 The main.py bullish stock path now requires BULLISH_STOCK_ACCOUNT_NUMBER in

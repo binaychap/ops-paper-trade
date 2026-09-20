@@ -53,9 +53,10 @@ def test_bearish_executor_receives_configured_percentages(monkeypatch):
     monkeypatch.setattr('app.webull_submitter._load_webull_option_module', lambda: broker)
     monkeypatch.setattr('app.bearish_option_executor.BearishPutOptionExecutor.submit',
                         lambda self, **kw: captured.update(kw) or {})
-    settings = Settings(_env_file=None, DRY_RUN=False, BEARISH_PROFIT_PERCENT=25, BEARISH_STOP_LOSS_PERCENT=12, OPTIONS_MARGIN_ACCOUNT_NUMBER="test-margin")
+    settings = Settings(_env_file=None, DRY_RUN=False, BEARISH_PROFIT_PERCENT=25, BEARISH_STOP_LOSS_PERCENT=12, OPTIONS_MARGIN_ACCOUNT_NUMBER="test-margin", BEARISH_QUOTE_MAX_AGE_SECONDS=1200)
     payload = SimpleNamespace(direction='bearish', entry_price=100, target_price=90, stop_price=110)
     submit_paper_order(dict(action='sell_short', symbol='AAPL', notional_usd=250), settings, 'test', payload)
+    assert captured['quote_max_age_seconds'] == 1200
     assert captured['profit_percent'] == 25
     assert captured['stop_loss_percent'] == 12
 
@@ -71,3 +72,23 @@ def test_bullish_runner_uses_configured_percentages(tmp_path):
     result = runner.process(dict(symbol='AAPL', total_premium=1000, trade_count=3))
     assert result['order']['target_price'] == 112
     assert result['order']['stop_price'] == 94
+
+
+def test_bearish_quote_age_from_environment_file(tmp_path, monkeypatch):
+    monkeypatch.delenv('BEARISH_QUOTE_MAX_AGE_SECONDS', raising=False)
+    env = tmp_path / '.env'
+    env.write_text('BEARISH_QUOTE_MAX_AGE_SECONDS=1200\n')
+    assert Settings(_env_file=env).bearish_quote_max_age_seconds == 1200
+    assert Settings(_env_file=None).bearish_quote_max_age_seconds == 60
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, BEARISH_QUOTE_MAX_AGE_SECONDS=0)
+
+
+def test_condor_quote_age_setting(tmp_path, monkeypatch):
+    monkeypatch.delenv('IRON_CONDOR_QUOTE_MAX_AGE_SECONDS', raising=False)
+    env = tmp_path / '.env'
+    env.write_text('IRON_CONDOR_QUOTE_MAX_AGE_SECONDS=1200\n')
+    assert Settings(_env_file=env).iron_condor_quote_max_age_seconds == 1200
+    assert Settings(_env_file=None).iron_condor_quote_max_age_seconds == 60
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, IRON_CONDOR_QUOTE_MAX_AGE_SECONDS=0)

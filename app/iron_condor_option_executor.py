@@ -102,7 +102,7 @@ def select_contracts(data_client, symbol, expiration, reference, width):
     raise CondorValidationError("No standard four-leg iron condor with a common listed expiry and equal wings")
 
 
-def quote_legs(data_client, contracts, now):
+def quote_legs(data_client, contracts, now, *, max_age_seconds=60):
     symbols = [c["symbol"] for c in contracts]
     response = data_client.option_market_data.get_option_snapshot(symbols, "US_OPTION")
     if response.status_code != 200:
@@ -119,8 +119,13 @@ def quote_legs(data_client, contracts, now):
         row = matches[0]
         bid, ask = number(row.get("bid")), number(row.get("ask"))
         age = number(now.timestamp()) - number(row.get("quote_time")) / 1000
-        if not 0 < bid <= ask or not -5 <= age <= 60:
-            raise QuoteError("Invalid, crossed, stale or future-dated iron-condor quote")
+        if not 0 < bid <= ask:
+            raise QuoteError(f"Invalid or crossed iron-condor quote for {symbol}")
+        if not -5 <= age <= max_age_seconds:
+            raise QuoteError(
+                f"Iron-condor quote for {symbol} has age {age:.1f} seconds "
+                f"(maximum {max_age_seconds} seconds; future tolerance 5 seconds)"
+            )
         quotes.append({"symbol": symbol, "bid": str(bid), "ask": str(ask), "quote_time": row["quote_time"]})
     return quotes
 
@@ -140,7 +145,8 @@ class IronCondorOptionExecutor:
 
     def submit(self, *, account_id, symbol, expiration, reference_price, max_risk_usd,
                quantity=1, wing_width=None, trade_client=None, profit_percent=10,
-               stop_loss_percent=5, exit_time_in_force="GTC", before_submit=None, now=None):
+               stop_loss_percent=5, exit_time_in_force="GTC", before_submit=None, now=None,
+               quote_max_age_seconds=60):
         requested_now = now
         now = now or datetime.now(UTC)
         ref, budget = number(reference_price), number(max_risk_usd)
@@ -159,7 +165,7 @@ class IronCondorOptionExecutor:
             raise CondorValidationError("Wing width must be positive")
         data = self.data_client or get_data_client()
         contracts, wing = select_contracts(data, symbol, expiration, ref, width)
-        quotes = quote_legs(data, contracts, requested_now)
+        quotes = quote_legs(data, contracts, requested_now, max_age_seconds=quote_max_age_seconds)
         # Sell inner legs at bid, buy protection at ask; no synthetic premium estimate.
         raw_credit = number(quotes[1]["bid"]) + number(quotes[2]["bid"]) - number(quotes[0]["ask"]) - number(quotes[3]["ask"])
         credit = tick_price(raw_credit, ROUND_FLOOR)

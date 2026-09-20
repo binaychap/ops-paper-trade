@@ -26,21 +26,21 @@ References: [Free Tier FAQ](https://www.oracle.com/cloud/free/faq/),
 
 Use **Compute → Instances → Create instance** in your home region.
 
-| Setting | Suggested choice |
-| --- | --- |
-| Name | `ops-paper-trade` |
-| Image | Oracle Linux 9 |
-| Shape | Always Free-eligible `VM.Standard.A1.Flex` |
-| CPU / memory | Start with 1 OCPU and 4 GB RAM |
-| Capacity | On-demand |
-| Availability domain | Any available domain in your home region |
-| Capacity reservation / dedicated host | None |
-| Compute cluster / cluster placement group | Leave unset |
-| Boot disk | Default approximately 46.6–50 GB |
-| Custom disk performance | Leave disabled; standard Balanced is sufficient |
-| In-transit encryption | Enable when supported |
-| Customer-managed encryption key | Leave disabled; use Oracle-managed keys |
-| Additional block volumes | None initially |
+| Setting                                   | Suggested choice                                |
+| ----------------------------------------- | ----------------------------------------------- |
+| Name                                      | `ops-paper-trade`                               |
+| Image                                     | Oracle Linux 9                                  |
+| Shape                                     | Always Free-eligible `VM.Standard.A1.Flex`      |
+| CPU / memory                              | Start with 1 OCPU and 4 GB RAM                  |
+| Capacity                                  | On-demand                                       |
+| Availability domain                       | Any available domain in your home region        |
+| Capacity reservation / dedicated host     | None                                            |
+| Compute cluster / cluster placement group | Leave unset                                     |
+| Boot disk                                 | Default approximately 46.6–50 GB                |
+| Custom disk performance                   | Leave disabled; standard Balanced is sufficient |
+| In-transit encryption                     | Enable when supported                           |
+| Customer-managed encryption key           | Leave disabled; use Oracle-managed keys         |
+| Additional block volumes                  | None initially                                  |
 
 Oracle currently documents an ARM allowance equivalent to 2 OCPUs and 12 GB RAM,
 plus 200 GB combined boot/block storage. These are total allowances, not per VM.
@@ -110,14 +110,27 @@ determines the operating system.
 Verify the host fingerprint through a trusted console channel when possible
 before accepting the first connection.
 
-| Error | Check |
-| --- | --- |
-| Permission denied (publickey) | Matching private key and correct OS username |
-| Connection timed out | Public IP, subnet, Internet Gateway route, SSH security rule and guest firewall |
-| Unprotected private key file | Apply `chmod 600` to the private key |
-| No public IP | Follow the preceding public-IP assignment steps |
+| Error                         | Check                                                                           |
+| ----------------------------- | ------------------------------------------------------------------------------- |
+| Permission denied (publickey) | Matching private key and correct OS username                                    |
+| Connection timed out          | Public IP, subnet, Internet Gateway route, SSH security rule and guest firewall |
+| Unprotected private key file  | Apply `chmod 600` to the private key                                            |
+| No public IP                  | Follow the preceding public-IP assignment steps                                 |
 
 ## 5. Install the application on the VM
+
+### Install tool with timeout
+
+```ps -eo pid,stat,etime,cmd | grep '[d]nf'
+sudo timeout 60 dnf -v --setopt=timeout=5 --setopt=retries=0 makecache
+
+sudo dnf --disablerepo='*' \
+  --enablerepo=ol9_baseos_latest \
+  --enablerepo=ol9_appstream \
+  --setopt=timeout=5 --setopt=retries=0 \
+  install -y git curl ca-certificates
+
+```
 
 Run on the **Oracle Linux 9 VM**:
 
@@ -132,10 +145,11 @@ The guide installs Python through uv, so it does not replace the system Python.
 Install uv using its official installer. Download and inspect it first:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
+curl -fL --connect-timeout 5 --max-time 60 --retry 2 https://astral.sh/uv/install.sh -o /tmp/uv-install.sh
 less /tmp/uv-install.sh
 sh /tmp/uv-install.sh
 export PATH="$HOME/.local/bin:$PATH"
+uv --version
 ```
 
 [Official uv installation instructions](https://docs.astral.sh/uv/getting-started/installation/).
@@ -344,6 +358,7 @@ Before submissions:
 
    This makes real feed/quote requests but does not submit orders. Dry-run rows
    reserve symbols, which is why the operational database must not be used.
+
 6. Confirm the dashboard, logs, service restart and backup restoration work.
 7. Stop all local trading processes, transfer final database history, and enable
    cloud trading only when ready.

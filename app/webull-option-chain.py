@@ -8,6 +8,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 import sys
+
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from webull.core.client import ApiClient
 from webull.data.data_client import DataClient
 
@@ -136,6 +139,7 @@ def _extract_contracts(response: Any) -> List[Dict[str, Any]]:
 def get_option_chain(
     client,
     symbol: str,
+    option_type: str | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Fetch all available Webull option contracts for an underlying.
@@ -163,7 +167,7 @@ def get_option_chain(
             response = instrument_client.get_option_contracts(
                 category="US_OPTION",
                 underlying_symbols=symbol,
-                option_type="CALL",
+                option_type=option_type,
                 page_size=100,
             )
         elif hasattr(instrument_client, "list_option_contracts"):
@@ -233,79 +237,7 @@ def print_all_expirations(symbol: str, contracts: List[Dict[str, Any]]) -> None:
 # Expiration Resolver
 # ============================================================
 
-def resolve_option_expiry(
-    requested_expiry: str,
-    available_expiries: List[str],
-) -> str:
-    """
-    If exact expiration exists -> use it.
-
-    Otherwise select the next expiration AFTER the requested
-    date.
-
-    Example:
-        requested = 2026-09-03
-
-        available:
-            2026-08-28
-            2026-09-04
-            2026-09-11
-
-        result:
-            2026-09-04
-    """
-
-    if not available_expiries:
-        raise ValueError(
-            "Webull returned no available option expirations."
-        )
-
-    requested_date = datetime.strptime(
-        requested_expiry,
-        "%Y-%m-%d",
-    ).date()
-
-    parsed_expirations = sorted(
-        datetime.strptime(
-            expiry,
-            "%Y-%m-%d",
-        ).date()
-        for expiry in available_expiries
-    )
-
-    # Exact expiration exists.
-    if requested_date in parsed_expirations:
-        logger.info(
-            "Requested expiry %s exists in Webull.",
-            requested_expiry,
-        )
-
-        return requested_expiry
-
-    # Otherwise choose nearest FUTURE expiry.
-    future_expirations = [
-        expiry
-        for expiry in parsed_expirations
-        if expiry > requested_date
-    ]
-
-    if not future_expirations:
-        raise ValueError(
-            f"No Webull option expiration exists after "
-            f"{requested_expiry}. "
-            f"Available expirations={available_expiries}"
-        )
-
-    selected_expiry = future_expirations[0].isoformat()
-
-    logger.warning(
-        "Requested expiry %s is unavailable. "
-        "Using next Webull expiry %s.",
-        requested_expiry,
-        selected_expiry,
-    )
-
-    return selected_expiry
+from app.option_expiration import resolve_option_expiry
 
 
 # ============================================================
@@ -372,6 +304,7 @@ def get_valid_webull_option_chain(
     contracts = get_option_chain(
         client=trade_client,
         symbol=symbol,
+        option_type=option_type,
     )
 
     if not contracts:
@@ -385,7 +318,7 @@ def get_valid_webull_option_chain(
     # --------------------------------------------------------
 
     available_expiries = get_available_expirations(
-        contracts
+        [c for c in contracts if _get_contract_type(c) == option_type]
     )
 
     logger.info(

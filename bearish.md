@@ -66,7 +66,7 @@ flowchart TD
     P --> Q[buy_put_with_bracket validates expiration and strike]
     Q -->|Contract validation fails| SKIP
     Q -->|Valid PUT| QUOTE[Fetch selected contract ask premium]
-    QUOTE -->|Missing, stale or invalid| FAIL
+    QUOTE -->|Missing, stale or invalid| SKIP
     QUOTE -->|Fresh| R[Round entry and 20 percent profit / 10 percent stop to 0.05 tick]
     R --> S[Submit PUT bracket to Webull]
     S --> T[BUY LIMIT entry plus SELL profit and stop legs]
@@ -95,10 +95,10 @@ an `ordered` row; it is not a permanent symbol-only exclusion.
 | Parameter | Current implementation |
 | --- | --- |
 | Reference level | First truthy payload entry, target, or stop; otherwise `max(notional_usd / 100, 1)` |
-| Requested expiration | Current UTC date plus five calendar days |
+| Expiration | Earliest listed PUT expiration after today (UTC); excludes expired and same-day contracts |
 | Requested strike | `round(reference_level / 5) * 5` |
 | Entry premium | Selected PUT contract snapshot ask, rounded to a 0.05 tick; no estimated-premium fallback |
-| Contract selection | Requested expiration if available, otherwise earliest returned expiration; closest available strike |
+| Contract selection | Paginated PUT chain; earliest eligible listed expiration and closest available strike |
 | Quantity | One contract |
 | Entry | PUT `BUY`, `BUY_TO_OPEN`, LIMIT, DAY |
 | Take profit | PUT SELL LIMIT at entry premium plus 20% |
@@ -111,7 +111,9 @@ exit prices are calculated separately from the option entry premium. Contract
 selection adjusts the expiration/strike before fetching the premium. The quote must
 match the selected contract, have a positive finite ask, and have `quote_time`
 within the last 60 seconds (at most five seconds in the future). Missing or
-invalid quotes prevent submission and the polling handler records failure.
+invalid quotes prevent submission; the shared submitter logs the reason and the
+polling handler records skipped. Timestamp diagnostics include stale age/limit
+or future offset. The quote freshness limit remains 60 seconds.
 
 The entry remains a LIMIT order at the quoted ask, rounded to the existing 0.05
 tick. Exits use that rounded entry limit, not the actual fill price. For example,
@@ -158,3 +160,23 @@ variables to the same value routes these strategies to the same account.
 The local values matched when checked on 2026-09-16; no live lookup was made.
 See [the account comparison](README.md#strategy-account-selection) for the
 separate main-service bullish/CALL paths and restart requirements.
+
+Expiration selection now queries listed PUT contracts without an exact-date
+filter. The hardcoded five-day offset is removed from the shared bearish path;
+main-option.py bearish submission delegates to that path too. The existing
+exact-or-next-listed resolver is shared through `app/option_expiration.py`.
+Empty chains skip execution; no synthetic expiration is used.
+
+## Delayed PUT quotes for paper testing
+
+`BEARISH_QUOTE_MAX_AGE_SECONDS` controls the bearish PUT ask timestamp age limit.
+The code and `.env.example` default to 60 seconds. Local `.env` is set to 1200
+seconds (20 minutes) to allow Webull's approximately 15-minute-delayed sandbox
+quotes. Entry and profit/stop prices therefore use the delayed premium, not a
+real-time price. Restart the service after editing the setting.
+
+Values must be positive integer seconds. Quotes beyond the configured limit,
+invalid/nonfinite prices or timestamps, and quotes more than five seconds in
+the future remain rejected. This setting does not change stock or iron-condor
+quote limits. Both bearish entry points use the shared submitter. No orders
+were placed to enable this setting.

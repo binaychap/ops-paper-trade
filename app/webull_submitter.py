@@ -74,11 +74,12 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
         reference_level = max(float(d.get("notional_usd") or 0.0) / 100.0, 1.0)
 
     if action == "sell_short":
+        from app.webull_quotes import QuoteError
         profit_percent, stop_loss_percent = exit_percentages(settings, "bearish")
         from app.bearish_option_executor import BearishPutOptionExecutor
         option_module = _load_webull_option_module()
         executor = BearishPutOptionExecutor(module=option_module)
-        expiry = (datetime.now(UTC) + timedelta(days=5)).strftime("%Y-%m-%d")
+        expiry = None  # Resolve the earliest future listed PUT expiration from the chain.
         strike = round(float(reference_level) / 5.0) * 5.0
         try:
             order_result = executor.submit(
@@ -89,7 +90,12 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
                 quantity=1,
                 profit_percent=profit_percent,
                 stop_loss_percent=stop_loss_percent,
+                quote_max_age_seconds=getattr(settings, "bearish_quote_max_age_seconds", 60),
             )
+        except QuoteError as exc:
+            import logging
+            logging.getLogger(__name__).warning("Skipping bearish PUT for %s: %s", symbol, exc)
+            return {"skipped": True, "reason": str(exc)}
         except Exception as exc:
             # If no option contracts are available, treat this idea as skipped.
             msg = str(exc)
@@ -139,6 +145,7 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
                 max_risk_usd=min(float(d.get("notional_usd") or 0), settings.max_notional_usd),
                 exit_time_in_force="GTC", quantity=1, before_submit=persist_before_submit,
                 profit_percent=profit_percent, stop_loss_percent=stop_loss_percent,
+                quote_max_age_seconds=getattr(settings, "iron_condor_quote_max_age_seconds", 60),
             )
         except AlreadySubmitted:
             return {"skipped": True, "reason": "Iron-condor attempt already recorded; reconcile saved event before retrying"}

@@ -4,6 +4,9 @@ import json
 import os
 import sys
 import logging
+import math
+from datetime import UTC, datetime, timedelta
+from app.option_expiration import resolve_option_expiry
 from webull.core.client import ApiClient
 from webull.data.data_client import DataClient
 
@@ -69,48 +72,58 @@ def _find_valid_contract(symbol: str, desired_expiration: str | None, desired_st
 
     data_client = DataClient(api_client)
 
-    # Try to fetch contracts for the requested expiration first
-    try:
-        resp = data_client.instrument.get_option_contracts(
-            category="US_OPTION",
-            underlying_symbols=symbol,
-            start_date=desired_expiration,
-            end_date=desired_expiration,
-            page_size=500,
-        )
-        if resp is None or (hasattr(resp, "status_code") and resp.status_code != 200):
-            # fallback: fetch all expirations
-            resp = data_client.instrument.get_option_contracts(
-                category="US_OPTION",
-                underlying_symbols=symbol,
-                page_size=500,
-            )
-        payload = resp.json() if resp is not None and hasattr(resp, "json") else resp
-    except Exception as exc:
-        raise RuntimeError(f"Unable to query option chain for {symbol}: {exc}")
-
+    # Read the listed chain, not an assumed calendar expiration. Follow pages
+    # so the closest eligible expiration/strike is not limited to page one.
     items = []
-    if isinstance(payload, dict):
-        # payload may contain 'data' or similar
-        for key in ("data", "items", "contracts", "options", "result", "results"):
-            maybe = payload.get(key)
-            if isinstance(maybe, list):
-                items = maybe
-                break
-    elif isinstance(payload, list):
-        items = payload
+    cursor = None
+    seen_cursors = set()
+    for _ in range(20):
+        kwargs = dict(category="US_OPTION", underlying_symbols=symbol, page_size=500)
+        if option_type is not None:
+            kwargs["option_type"] = option_type
+        if cursor is not None:
+            kwargs["last_instrument_id"] = cursor
+        resp = data_client.instrument.get_option_contracts(**kwargs)
+        if resp is None or getattr(resp, "status_code", 200) != 200:
+            raise RuntimeError("Unable to query listed option contracts")
+        payload = resp.json() if hasattr(resp, "json") else resp
+        rows = payload if isinstance(payload, list) else None
+        if isinstance(payload, dict):
+            for key in ("data", "items", "contracts", "options", "result", "results"):
+                if isinstance(payload.get(key), list):
+                    rows = payload[key]
+                    break
+        if rows is None:
+            raise RuntimeError("Unexpected option chain response")
+        items.extend(rows)
+        if len(rows) < 500:
+            break
+        cursor = rows[-1].get("instrument_id")
+        if not cursor or cursor in seen_cursors:
+            raise RuntimeError("Incomplete option chain pagination")
+        seen_cursors.add(cursor)
+    else:
+        raise RuntimeError("Option chain pagination limit exceeded")
 
     expirations: dict[str, dict[float, dict]] = {}
     for item in items:
+        if not isinstance(item, dict):
+            continue
         if option_type is not None and str(item.get("option_type") or "").upper() != option_type:
             continue
         exp = item.get("expiration_date") or item.get("expiration") or item.get("exp_date") or item.get("expire_date") or item.get("expiry")
         if not exp:
             continue
+        try:
+            exp = datetime.fromisoformat(str(exp)).date().isoformat()
+        except ValueError:
+            continue
         strike_raw = item.get("strike_price") or item.get("strike") or item.get("strikePrice")
         try:
             strike = float(strike_raw)
         except Exception:
+            continue
+        if not math.isfinite(strike) or strike <= 0:
             continue
         # collect the full item for this expiration+strike
         expirations.setdefault(exp, {})[strike] = item
@@ -118,13 +131,10 @@ def _find_valid_contract(symbol: str, desired_expiration: str | None, desired_st
     if not expirations:
         raise RuntimeError(f"No option contracts found for {symbol}")
 
-    # If desired expiration exists, prefer it; otherwise pick the nearest available expiration
-    chosen_exp = None
-    if desired_expiration and desired_expiration in expirations:
-        chosen_exp = desired_expiration
-    else:
-        # pick any expiration (prefer the earliest)
-        chosen_exp = sorted(expirations.keys())[0]
+    # Without a requested minimum, exclude same-day and expired contracts.
+    tomorrow = (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
+    minimum = max(desired_expiration or tomorrow, tomorrow)
+    chosen_exp = resolve_option_expiry(minimum, list(expirations))
 
     available_strikes = sorted(expirations[chosen_exp].keys())
     if not available_strikes:
@@ -404,7 +414,7 @@ def buy_put_with_bracket(
     account_id: str,
     symbol: str,
     strike: float,
-    expiration: str,
+    expiration: str | None,
     quantity: int,
     entry_limit: float | None = None,
     profit_percent: float = 20,
@@ -412,6 +422,7 @@ def buy_put_with_bracket(
     trade_client=None,
     *,
     exit_time_in_force: str = "DAY",
+    quote_max_age_seconds: int = 60,
 ):
     trade_client = trade_client or get_trade_client()
     symbol = symbol.upper()
@@ -422,7 +433,7 @@ def buy_put_with_bracket(
         raise RuntimeError(f"Contract validation failed: {exc}")
     if entry_limit is None:
         from app.webull_quotes import current_option_ask
-        entry_limit = current_option_ask(contract_symbol)["price"]
+        entry_limit = current_option_ask(contract_symbol, max_age_seconds=quote_max_age_seconds)["price"]
     tick_size = 0.05
     entry_limit = round_to_tick(entry_limit, tick_size)
     take_profit_price = round_to_tick(entry_limit * (1 + profit_percent / 100), tick_size)

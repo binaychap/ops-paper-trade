@@ -579,3 +579,24 @@ The separate strategies do not share a complete position/deduplication guard.
 
 For the dedicated bullish runner’s end-to-end diagram, account selection,
 configurable exits and ledger behavior, see [bullish.md](bullish.md).
+
+## Delayed PUT quotes for paper testing
+
+`BEARISH_QUOTE_MAX_AGE_SECONDS` controls the bearish PUT ask timestamp age limit.
+The code and `.env.example` default to 60 seconds. Local `.env` is set to 1200
+seconds (20 minutes) to allow Webull's approximately 15-minute-delayed sandbox
+quotes. Entry and profit/stop prices therefore use the delayed premium, not a
+real-time price. Restart the service after editing the setting.
+
+Values must be positive integer seconds. Quotes beyond the configured limit,
+invalid/nonfinite prices or timestamps, and quotes more than five seconds in
+the future remain rejected. This setting does not change stock or iron-condor
+quote limits. Both bearish entry points use the shared submitter. No orders
+were placed to enable this setting.
+
+Neutral iron-condor submissions use the independent
+`IRON_CONDOR_QUOTE_MAX_AGE_SECONDS` setting. It defaults to 60 seconds; local
+`.env` sets it to 1200 seconds for delayed sandbox paper testing. All four legs
+must have valid bid/ask prices and timestamps within this limit. The five-second
+future tolerance remains unchanged. Credit and exit prices use those delayed
+premiums. Restart the service to apply changes.
