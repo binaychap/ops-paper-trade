@@ -25,6 +25,7 @@ from app.webull_submitter import submit_paper_order, _is_webull_rate_limit_error
 from app.ledger import Ledger
 from app.dashboard import router as dashboard_router
 from app.records import router as records_router
+from app.api_trading import router as trading_router
 
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -79,6 +80,8 @@ class Settings(StrategyExitSettings):
     next_day_exit_poll_seconds: int = Field(default=30, ge=10, alias="NEXT_DAY_EXIT_POLL_SECONDS")
 
     database_path: str = Field(default="bot.sqlite3", alias="DATABASE_PATH")
+    # Bearer token for the iOS trading API. Empty disables /api/trading/*.
+    ios_api_key: str = Field(default="", alias="IOS_API_KEY", repr=False)
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
@@ -186,6 +189,7 @@ def resolve_option_contract_symbol(
 app = FastAPI(title="Optionomics Trade Ideas Trading Bot", version="1.0.0")
 app.include_router(dashboard_router)
 app.include_router(records_router)
+app.include_router(trading_router)
 
 
 def poll_optionomics_trade_ideas() -> list[dict[str, Any]]:

@@ -1,5 +1,40 @@
 # Ops Paper Trade — project memory
 
+## iOS trading API (2026-09-22)
+
+`app/api_trading.py` adds a bearer-authenticated `/api/trading` surface for
+the iOS companion client, mounted in `app/main.py`. `IOS_API_KEY` (new
+`Settings` field, in `.env.example`, empty by default) gates all routes:
+empty key returns 503, wrong/missing token returns 401 via
+hmac.compare_digest. `get_settings` is imported lazily to avoid a main.py
+import cycle. Endpoints: `GET /account` (balances and equity positions from
+`account_v2.get_account_balance`/`get_account_position`, defensively
+mapped), `GET /orders` (broker `order_v3.get_order_history` with ledger
+`events` fallback for `manual:` fingerprints), `POST /orders/preview`
+(validation only: symbol/quantity/price/notional_cap checks, reference
+quote from `app/webull_quotes.py` with a 1200-second age tolerance for
+delayed sandbox snapshots, market-open and position checks as warnings),
+and `POST /orders` (requires `confirm: true`, re-runs blocking checks,
+records a `manual:<client_order_id>` event). `DRY_RUN=true` records a
+dry_run event without a broker call. Manual buys reuse the existing
+`webull-buy-combo-stock.py` bracket submitter (entry plus configured
+bullish stop/target); manual sells are single-leg NORMAL orders via
+`order_v3.place_order` matching the scheduled-exit leg shape. Stocks only;
+no option order support. README documents the endpoints and the
+`uvicorn --host 0.0.0.0 --port 8000` LAN binding the iPhone needs. Broker
+response shapes (balance fields, order history rows) are mapped
+defensively and remain unverified against live sandbox responses; no
+broker calls were made during implementation.
+
+## Deployment service operations (2026-09-20)
+
+The runbook also documents verbose SSH tunnel diagnostics, file logging with
+`-E ~/ssh-tunnel.log`, and following systemd application logs from a Mac over SSH.
+
+deployment.md now lists start, stop, status, recent-log and live-log commands
+for the API systemd service. These commands run on the Oracle Linux VM, not
+Oracle Cloud Shell. Ctrl+C exits live log viewing without stopping the service.
+
 ## Delayed iron-condor quotes for paper testing (2026-09-20)
 
 IRON_CONDOR_QUOTE_MAX_AGE_SECONDS is a positive integer setting passed through

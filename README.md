@@ -118,6 +118,44 @@ PYTHONPATH=. uv run uvicorn app.main:app --host 127.0.0.1 --port 8001 --lifespan
 Then open http://127.0.0.1:8001/. The scheduler badge represents configuration,
 not proof that a worker is running; this preview command disables startup hooks.
 
+## iOS trading API
+
+`app/api_trading.py` exposes a bearer-authenticated trading surface for the
+iOS companion client, mounted at `/api/trading`. Set `IOS_API_KEY` in `.env`
+(added to `.env.example`, empty by default). Every request needs
+`Authorization: Bearer <IOS_API_KEY>`; a missing or wrong token returns 401,
+and an empty key disables all four routes with 503.
+
+- `GET /api/trading/account` — balances (`total_value`, `cash`,
+  `buying_power`) and equity positions from Webull `account_v2`, mapped
+  defensively from the SDK response.
+- `GET /api/trading/orders?limit=50` — recent broker orders from
+  `order_v3.get_order_history`, falling back to local manual-order ledger
+  events when the broker is unreachable.
+- `POST /api/trading/orders/preview` — validates a stock order ticket and
+  returns checks (`symbol_valid`, `quantity_valid`, `price_valid`,
+  `notional_cap` against `MAX_NOTIONAL_USD`), a Webull reference quote,
+  estimated notional, and warnings (market closed, position shortfall).
+  Never submits.
+- `POST /api/trading/orders` — same ticket plus `"confirm": true`;
+  re-runs the checks, then submits. With `DRY_RUN=true` nothing is sent to
+  the broker and a `dry_run` event is recorded. Manual orders are recorded
+  in the ledger `events` table with source `manual` under fingerprint
+  `manual:<client_order_id>`.
+
+Manual **buy** orders reuse the bot's existing stock bracket submitter
+(`webull-buy-combo-stock.py`): entry at market or limit plus the configured
+bullish stop/target exits. Manual **sell** orders are single-leg NORMAL
+orders placed through `order_v3.place_order`, the same leg shape the
+scheduled-exit market sells use. Stocks only; no option orders.
+
+The iPhone cannot reach `127.0.0.1`; bind the server to the Mac's LAN
+address so the app can connect:
+
+```bash
+PYTHONPATH=. uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
 ## Scheduled next-trading-day stock exits
 
 The optional scheduler exits tracked long stock trades at market on the next
