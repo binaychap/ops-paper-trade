@@ -62,3 +62,13 @@ class BullishLedger(Ledger):
                   json.dumps(order) if order is not None else None,
                   error, utc_now_iso(), trade_id))
             conn.commit()
+
+    def mark_morning_sold(self, symbol):
+        """Record a morning-sell liquidation so the symbol is not resold."""
+        with closing(sqlite3.connect(self.path, timeout=30)) as conn:
+            conn.execute(
+                "UPDATE top_bullish_trades SET status='sold', updated_at=? "
+                "WHERE symbol=? AND status='submitted'",
+                (utc_now_iso(), str(symbol).upper()),
+            )
+            conn.commit()
