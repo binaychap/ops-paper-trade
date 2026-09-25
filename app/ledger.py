@@ -287,3 +287,58 @@ class Ledger:
                     ("failed", error[:1000], now, fingerprint),
                 )
                 conn.commit()
+
+    def morning_sell_holdings(self) -> list[dict[str, Any]]:
+        """Stock holdings the daily morning sell should liquidate.
+
+        Union of actively tracked stock exits and submitted bullish-runner
+        trades, deduplicated by (account_id, symbol). Scheduled exits carry
+        their broker account_id; bullish-runner rows leave account_id None
+        for the caller to resolve from settings.
+        """
+        holdings: list[dict[str, Any]] = []
+        seen: set[tuple[str | None, str]] = set()
+        with closing(sqlite3.connect(self.path, timeout=10)) as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "scheduled_stock_exits" in tables:
+                rows = conn.execute(
+                    "SELECT account_id, symbol, state_json FROM scheduled_stock_exits WHERE status != 'complete'"
+                ).fetchall()
+                for account_id, symbol, state_json in rows:
+                    try:
+                        job = json.loads(state_json)
+                    except (ValueError, TypeError):
+                        continue
+                    tracked = job.get("entry_filled_quantity") or job.get("quantity") or "0"
+                    key = (account_id, str(symbol).upper())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    holdings.append({
+                        "account_id": account_id,
+                        "symbol": str(symbol).upper(),
+                        "tracked_quantity": str(tracked),
+                        "source": "scheduled_stock_exits",
+                        "job": job,
+                    })
+            if "top_bullish_trades" in tables:
+                rows = conn.execute(
+                    "SELECT symbol, order_request_json FROM top_bullish_trades WHERE status = 'submitted'"
+                ).fetchall()
+                for symbol, order_request_json in rows:
+                    try:
+                        order_request = json.loads(order_request_json or "{}")
+                    except (ValueError, TypeError):
+                        order_request = {}
+                    key = (None, str(symbol).upper())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    holdings.append({
+                        "account_id": None,
+                        "symbol": str(symbol).upper(),
+                        "tracked_quantity": str(order_request.get("quantity") or 0),
+                        "source": "top_bullish_trades",
+                        "job": None,
+                    })
+        return holdings
