@@ -21,11 +21,16 @@ cd ~/ops-paper-trade
 PYTHONPATH=. uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Keep it alive after SSH disconnects:
+Keep it alive after SSH disconnects (use `>>` so restarts append instead of wiping the old log):
 
 ```bash
-PYTHONPATH=. nohup uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 > uvicorn.log 2>&1 &
+PYTHONPATH=. nohup uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 >> uvicorn.log 2>&1 &
 ```
+
+Logs: uvicorn has no default log file — it writes to stdout/stderr, which the
+command above captures in `~/ops-paper-trade/uvicorn.log`. Watch it live with
+`tail -f uvicorn.log`. To keep a copy of the old log before restarting,
+`mv uvicorn.log uvicorn.log.bak` first.
 
 Verify it's listening on all interfaces — want `0.0.0.0:8000`, not `127.0.0.1:8000`:
 
