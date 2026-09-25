@@ -1,5 +1,32 @@
 # Ops Paper Trade — project memory
 
+## Morning sell at 10 AM ET (2026-09-24)
+
+`app/morning_sell.py` adds an optional worker that sells every bot-tracked
+stock holding at market once per trading day at 10:00 AM New York time.
+`MorningSellCalendar` uses `exchange-calendars` XNYS sessions (weekends,
+holidays, DST and early closes handled); `MorningSellScheduler.run_once`
+waits until the window, then per holding: (1) queries the SQLite ledger via
+`Ledger.morning_sell_holdings()` — `scheduled_stock_exits` rows not complete
+(account_id carried) plus `top_bullish_trades` rows with status 'submitted'
+(account resolved from `BULLISH_STOCK_ACCOUNT_NUMBER`) — and (2) sells at
+market through `StockExecution.market_sell` (SELL / MARKET / DAY / CORE),
+the same order shape the scheduled-exit worker uses.
+
+Per-symbol intent is reserved in `events` (`morning-sell:<date>:<account>:<symbol>`)
+before the broker call, so restarts never double-sell; the sell quantity is the
+broker-confirmed position capped at the tracked quantity. Sold rows are marked
+complete/sold so the next-day exit worker skips them; if both workers are
+enabled, whichever runs first wins. `MORNING_SELL_ENABLED` defaults false,
+`MORNING_SELL_TIME=10:00`, `MORNING_SELL_TIMEZONE=America/New_York`,
+`MORNING_SELL_POLL_SECONDS=60` (all in Settings and `.env.example`); the
+FastAPI startup handler skips the worker when disabled or when `DRY_RUN=true`,
+and refuses to start with a clear log when `BULLISH_STOCK_ACCOUNT_NUMBER` is
+unset. `tests/test_morning_sell.py`: 8 passed (calendar, waiting, sell pass,
+idempotency across restarts, zero-position skip, dry run). Full suite: 186
+passed, 17 failed — all 17 pre-existing on the pristine tree (recorded bullish
+market-hours interface). No broker orders placed.
+
 ## iOS trading API (2026-09-22)
 
 `app/api_trading.py` adds a bearer-authenticated `/api/trading` surface for
