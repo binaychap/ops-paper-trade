@@ -79,6 +79,11 @@ class Settings(StrategyExitSettings):
     next_day_exit_timezone: Literal["America/New_York"] = Field(default="America/New_York", alias="NEXT_DAY_EXIT_TIMEZONE")
     next_day_exit_poll_seconds: int = Field(default=30, ge=10, alias="NEXT_DAY_EXIT_POLL_SECONDS")
 
+    morning_sell_enabled: bool = Field(default=False, alias="MORNING_SELL_ENABLED")
+    morning_sell_time: str = Field(default="10:00", pattern=r"^(09:(3[0-9]|[45][0-9])|1[0-5]:[0-5][0-9])$", alias="MORNING_SELL_TIME")
+    morning_sell_timezone: Literal["America/New_York"] = Field(default="America/New_York", alias="MORNING_SELL_TIMEZONE")
+    morning_sell_poll_seconds: int = Field(default=60, ge=10, alias="MORNING_SELL_POLL_SECONDS")
+
     database_path: str = Field(default="bot.sqlite3", alias="DATABASE_PATH")
     # Bearer token for the iOS trading API. Empty disables /api/trading/*.
     ios_api_key: str = Field(default="", alias="IOS_API_KEY", repr=False)
@@ -575,3 +580,58 @@ def stop_exit_scheduler() -> None:
     if stop:
         stop.set()
         app.state.exit_scheduler_thread.join(timeout=5)
+
+
+@app.on_event("startup")
+def start_morning_sell() -> None:
+    settings = get_settings()
+    if not settings.morning_sell_enabled or settings.dry_run:
+        return
+    from app.bullish_ledger import BullishLedger
+    from app.morning_sell import MorningSellCalendar, MorningSellScheduler
+    from app.stock_execution import StockExecution
+    from app.strategy_settings import bullish_stock_account_id
+    from app.webull_broker import get_trade_client
+    from app.webull_submitter import _load_webull_stock_module
+
+    # Bullish-runner rows carry no account_id; resolve the stock account once
+    # up front so a misconfiguration is a clear startup log, not a silent skip.
+    try:
+        stock_account_id = bullish_stock_account_id(_load_webull_stock_module(), settings)
+    except ValueError as exc:
+        logger.error("Morning sell not started: %s", exc)
+        return
+
+    stop = threading.Event()
+    app.state.morning_sell_stop = stop
+    ledger = BullishLedger(settings.database_path)
+    calendar = MorningSellCalendar(settings.morning_sell_time, settings.morning_sell_timezone)
+    scheduler = MorningSellScheduler(
+        ledger,
+        StockExecution(get_trade_client()),
+        calendar,
+        resolve_account=lambda: stock_account_id,
+        dry_run=settings.dry_run,
+    )
+
+    def runner():
+        while not stop.is_set():
+            try:
+                summary = scheduler.run_once()
+                if summary.get("status") not in ("waiting", "no_session", "already_ran"):
+                    logger.info("Morning sell: %s", summary)
+            except Exception:
+                logger.exception("Morning sell worker failed; will retry")
+            stop.wait(settings.morning_sell_poll_seconds)
+
+    thread = threading.Thread(target=runner, name="morning-sell", daemon=True)
+    app.state.morning_sell_thread = thread
+    thread.start()
+
+
+@app.on_event("shutdown")
+def stop_morning_sell() -> None:
+    stop = getattr(app.state, "morning_sell_stop", None)
+    if stop:
+        stop.set()
+        app.state.morning_sell_thread.join(timeout=5)
