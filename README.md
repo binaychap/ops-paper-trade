@@ -212,6 +212,38 @@ accounting; use a dedicated paper account for this workflow. Worker and entry
 submission exclusion uses a POSIX file lock beside SQLite, supporting processes
 on a single host with the same local database, not distributed deployments.
 
+## Morning sell (10 AM ET)
+
+An optional worker sells every bot-tracked stock holding at market once per
+trading day at **10:00 AM New York time**, regardless of profit or loss. Each
+pass queries the SQLite ledger for the holdings table(s) — `scheduled_stock_exits`
+rows that are not complete, plus `top_bullish_trades` rows with status
+`'submitted'` — then sells each symbol at market through the Webull sell API
+(`SELL / MARKET / DAY / CORE`), the same order shape the scheduled-exit worker
+uses for its market leg.
+
+```env
+MORNING_SELL_ENABLED=false
+MORNING_SELL_TIME=10:00
+MORNING_SELL_TIMEZONE=America/New_York
+MORNING_SELL_POLL_SECONDS=60
+```
+
+The feature is disabled by default. `DRY_RUN=true` prevents worker startup and
+all broker submissions. After sandbox validation, set `MORNING_SELL_ENABLED=true`
+and `DRY_RUN=false` and restart the service. Bullish-runner holdings carry no
+account id in the ledger, so they resolve to `BULLISH_STOCK_ACCOUNT_NUMBER`;
+set it before enabling. A missed 10 AM window is retried at the next session;
+weekends and exchange holidays are skipped via `exchange-calendars` (`XNYS`).
+
+Safety mirrors the exit worker: the sell quantity is the broker-confirmed
+position capped at the tracked quantity, and the submission intent
+(`morning-sell:<date>:<account>:<symbol>`) is reserved in the `events` table
+before the network call, so restarts never double-sell. Sold rows are marked
+complete (`scheduled_stock_exits`) or `sold` (`top_bullish_trades`) so the
+next-day exit worker does not sell them again. If both workers are enabled,
+whichever runs first wins; the other sees the completed row and skips it.
+
 Inspect state without modifying it:
 
 ```sql
