@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.webull_quotes import QuoteError, current_option_ask
+from app.broker.quotes import QuoteError, current_option_ask
 
 
 NOW = datetime(2026, 9, 16, 15, tzinfo=UTC)
@@ -45,7 +45,7 @@ def test_missing_or_unavailable_option_quote(rows, status):
 
 
 def load_builder():
-    path = Path(__file__).resolve().parents[1] / 'app/webull-buy-combo-option.py'
+    path = Path(__file__).resolve().parents[1] / 'app/options/brackets.py'
     spec = importlib.util.spec_from_file_location('bearish_premium_builder_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -70,7 +70,7 @@ def test_put_bracket_quotes_selected_contract_and_submits_20_10_exits(monkeypatc
         return SimpleNamespace(status_code=200, json=lambda: {'order_id': 'test'})
 
     monkeypatch.setattr(module, '_find_valid_contract', contract)
-    monkeypatch.setattr('app.webull_quotes.current_option_ask', ask)
+    monkeypatch.setattr('app.broker.quotes.current_option_ask', ask)
     client = SimpleNamespace(order_v3=SimpleNamespace(place_order=place_order))
     module.buy_put_with_bracket('test', 'AAPL', 103, '2026-09-21', 1, trade_client=client, quote_max_age_seconds=1200)
     entry, profit, stop = calls
@@ -90,7 +90,7 @@ def test_quote_failure_prevents_order_submission(monkeypatch):
     def unavailable(symbol, **kwargs):
         raise QuoteError('stale')
 
-    monkeypatch.setattr('app.webull_quotes.current_option_ask', unavailable)
+    monkeypatch.setattr('app.broker.quotes.current_option_ask', unavailable)
     with pytest.raises(QuoteError, match='stale'):
         module.buy_put_with_bracket('test', 'AAPL', 100, '2026-09-18', 1, trade_client=object())
 
@@ -127,10 +127,10 @@ def test_option_quote_timestamp_diagnostics(offset, fragment):
 
 
 def test_bearish_quote_error_returns_skip(monkeypatch):
-    from app import webull_submitter
+    from app.execution import submitter as webull_submitter
     def stale(self, **kwargs):
         raise QuoteError('Option quote is stale: age 61 seconds')
-    monkeypatch.setattr('app.bearish_option_executor.BearishPutOptionExecutor.submit', stale)
+    monkeypatch.setattr('app.bearish.executor.BearishPutOptionExecutor.submit', stale)
     module = SimpleNamespace(get_account_id=lambda **kw: 'test')
     monkeypatch.setattr(webull_submitter, '_load_webull_option_module', lambda: module)
     settings = SimpleNamespace(dry_run=False, options_margin_account_number='test-margin')
@@ -168,7 +168,7 @@ def test_chain_expiry_uses_listed_put_dates_without_five_day_filter(monkeypatch)
 
 
 def test_expiry_resolver_uses_next_listed_expiration_for_weekend():
-    from app.option_expiration import resolve_option_expiry
+    from app.options.expiration import resolve_option_expiry
     assert resolve_option_expiry('2026-09-19', ['2026-09-18', '2026-09-21', '2026-09-25']) == '2026-09-21'
     assert resolve_option_expiry('2026-09-21', ['2026-09-21']) == '2026-09-21'
     with pytest.raises(ValueError, match='No listed'):
@@ -187,7 +187,7 @@ def test_configurable_delayed_quote_limit(age, limit, accepted):
 
 
 def test_executor_passes_configured_quote_limit():
-    from app.bearish_option_executor import BearishPutOptionExecutor
+    from app.bearish.executor import BearishPutOptionExecutor
     captured = {}
     executor = BearishPutOptionExecutor(module=SimpleNamespace(buy_put_with_bracket=lambda **kw: captured.update(kw) or {}))
     executor.submit(account_id='test', symbol='AAPL', strike=100, expiration=None,

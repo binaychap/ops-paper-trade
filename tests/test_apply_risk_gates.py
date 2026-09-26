@@ -288,7 +288,7 @@ def test_optionomics_bearish_direction_checks_its_range():
 
 
 def test_bearish_put_executor_uses_put_bracket_builder():
-    from app.bearish_option_executor import BearishPutOptionExecutor
+    from app.bearish.executor import BearishPutOptionExecutor
 
     executor = BearishPutOptionExecutor()
 
@@ -444,7 +444,7 @@ def test_submit_paper_order_calculates_stop_and_target_from_entry(monkeypatch):
         matched_criteria={},
     )
 
-    monkeypatch.setattr("app.webull_submitter._load_webull_stock_module", lambda: FakeWebullModule())
+    monkeypatch.setattr("app.execution.submitter._load_webull_stock_module", lambda: FakeWebullModule())
 
     submit_paper_order(decision, settings, "fingerprint-1234567890abcd", payload)
 
@@ -455,7 +455,7 @@ def test_submit_paper_order_calculates_stop_and_target_from_entry(monkeypatch):
 
 def test_submit_paper_order_routes_bearish_decisions_to_put_executor(monkeypatch):
     from app.main import Settings, TradingDecision
-    from app import webull_submitter
+    from app.execution import submitter as webull_submitter
 
     captured = {}
 
@@ -494,7 +494,7 @@ def test_submit_paper_order_routes_bearish_decisions_to_put_executor(monkeypatch
     payload = SimpleNamespace(entry_price=100.0, target_price=90.0, stop_price=105.0)
 
     monkeypatch.setattr(webull_submitter, "_load_webull_option_module", lambda: FakeBrokerModule())
-    monkeypatch.setattr("app.bearish_option_executor.BearishPutOptionExecutor", FakeExecutor)
+    monkeypatch.setattr("app.bearish.executor.BearishPutOptionExecutor", FakeExecutor)
 
     result = webull_submitter.submit_paper_order(decision, settings, "fingerprint-1234567890abcd", payload)
 
@@ -510,7 +510,7 @@ def test_buy_stock_submits_combo_bracket_order(monkeypatch):
     import importlib.util
     from pathlib import Path
 
-    module_path = Path(__file__).resolve().parent.parent / "app" / "webull-buy-combo-stock.py"
+    module_path = Path(__file__).resolve().parent.parent / "app" / "bullish/stock_bracket.py"
     spec = importlib.util.spec_from_file_location("webull_combo_stock_test", module_path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
@@ -578,7 +578,7 @@ def test_submit_paper_order_fails_immediately_on_webull_429(monkeypatch):
     )
     settings = Settings(DRY_RUN=False, BULLISH_STOCK_ACCOUNT_NUMBER="test-cash")
 
-    monkeypatch.setattr("app.webull_submitter._load_webull_stock_module", lambda: FakeWebullModule())
+    monkeypatch.setattr("app.execution.submitter._load_webull_stock_module", lambda: FakeWebullModule())
 
     with pytest.raises(RuntimeError, match="429|TOO_MANY_REQUESTS"):
         submit_paper_order(decision, settings, "fingerprint-1234567890abcd")

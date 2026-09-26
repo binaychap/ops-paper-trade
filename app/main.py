@@ -1,36 +1,29 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
-import json
 import logging
 import os
 import re
-import sqlite3
 import threading
 import time
-from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal
 from enum import Enum
-import sys
 from zoneinfo import ZoneInfo
 
-from app.optionomics_client import fetch_trade_ideas
-from app.optionomics import build_trade_decision_from_optionomics_payload
-from app.webull_submitter import submit_paper_order, _is_webull_rate_limit_error as is_webull_rate_limit_error
-from app.ledger import Ledger
-from app.dashboard import router as dashboard_router
-from app.records import router as records_router
-from app.api_trading import router as trading_router
+from app.feeds.optionomics_client import fetch_trade_ideas
+from app.feeds.decisions import build_trade_decision_from_optionomics_payload
+from app.execution.submitter import submit_paper_order, _is_webull_rate_limit_error as is_webull_rate_limit_error
+from app.persistence.ledger import Ledger
+from app.ui.dashboard import router as dashboard_router
+from app.ui.records import router as records_router
+from app.api.trading import router as trading_router
 
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from pydantic_settings import SettingsConfigDict
-from app.strategy_settings import StrategyExitSettings
+from app.config.settings import Settings
 
 logger = logging.getLogger("optionomics_bot")
 logger.setLevel(logging.INFO)
@@ -54,41 +47,6 @@ def color_symbol(symbol: str | None) -> str:
 def color_error(value: str | None) -> str:
     text = str(value or "unknown").upper()
     return f"\033[31m{text}\033[0m"
-
-
-class Settings(StrategyExitSettings):
-    """Runtime settings loaded from environment variables."""
-    dry_run: bool = Field(default=True, alias="DRY_RUN")
-    max_notional_usd: float = Field(default=250.0, gt=0.0, alias="MAX_NOTIONAL_USD")
-    allow_short_selling: bool = Field(default=False, alias="ALLOW_SHORT_SELLING")
-    force_reprocess: bool = Field(default=False, alias="FORCE_REPROCESS")
-    optionomics_api_key: str | None = Field(default=None, alias="OPTIONOMICS_API_KEY")
-    optionomics_email: str | None = Field(default=None, alias="OPTIONOMICS_EMAIL")
-    optionomics_api_url: str = Field(default="https://optionomics.ai/api/v1/trade_ideas", alias="OPTIONOMICS_API_URL")
-    optionomics_poll_enabled: bool = Field(default=True, alias="OPTIONOMICS_POLL_ENABLED")
-    optionomics_poll_interval_seconds: int = Field(default=600, ge=1, alias="OPTIONOMICS_POLL_INTERVAL_SECONDS")
-
-    webull_app_key: str | None = Field(default=None, alias="WEBULL_APP_KEY")
-    webull_app_secret: str | None = Field(default=None, alias="WEBULL_APP_SECRET")
-    webull_endpoint: str = Field(default="api.sandbox.webull.com", alias="WEBULL_ENDPOINT")
-    # Accepted from the shared .env; account selection is used by the bullish runner.
-    top_bullish_account_number: str = Field(default="", alias="TOP_BULLISH_ACCOUNT_NUMBER", repr=False)
-
-    next_day_exit_enabled: bool = Field(default=False, alias="NEXT_DAY_EXIT_ENABLED")
-    next_day_exit_time: str = Field(default="09:35", pattern=r"^(09:(3[0-9]|[45][0-9])|1[0-5]:[0-5][0-9])$", alias="NEXT_DAY_EXIT_TIME")
-    next_day_exit_timezone: Literal["America/New_York"] = Field(default="America/New_York", alias="NEXT_DAY_EXIT_TIMEZONE")
-    next_day_exit_poll_seconds: int = Field(default=30, ge=10, alias="NEXT_DAY_EXIT_POLL_SECONDS")
-
-    morning_sell_enabled: bool = Field(default=False, alias="MORNING_SELL_ENABLED")
-    morning_sell_time: str = Field(default="10:00", pattern=r"^(09:(3[0-9]|[45][0-9])|1[0-5]:[0-5][0-9])$", alias="MORNING_SELL_TIME")
-    morning_sell_timezone: Literal["America/New_York"] = Field(default="America/New_York", alias="MORNING_SELL_TIMEZONE")
-    morning_sell_poll_seconds: int = Field(default=60, ge=10, alias="MORNING_SELL_POLL_SECONDS")
-
-    database_path: str = Field(default="bot.sqlite3", alias="DATABASE_PATH")
-    # Bearer token for the iOS trading API. Empty disables /api/trading/*.
-    ios_api_key: str = Field(default="", alias="IOS_API_KEY", repr=False)
-
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 
 class OrderSide(Enum):
@@ -387,7 +345,7 @@ def validate_optionomics_symbol_match(payload: dict[str, Any], decision: Trading
 
 def build_trade_decision_from_optionomics_payload(payload: dict[str, Any], settings: Settings) -> TradingDecision:
     # compatibility wrapper: optionomics.build_trade_decision_from_optionomics_payload returns a dict
-    from app.optionomics import build_trade_decision_from_optionomics_payload as _builder
+    from app.feeds.decisions import build_trade_decision_from_optionomics_payload as _builder
 
     result = _builder(payload, settings)
     if isinstance(result, dict):
@@ -506,7 +464,7 @@ def apply_risk_gates(
         return skip_decision(decision, "Entry, target, and stop levels are required")
 
     if decision.action == "buy" and payload.direction == "neutral":
-        from app.optionomics import validate_optionomics_directional_levels
+        from app.feeds.decisions import validate_optionomics_directional_levels
         if decision.strategy != "iron_condor" or not validate_optionomics_directional_levels(
             "neutral", payload.entry_price, payload.target_price, payload.stop_price
         ):
@@ -550,9 +508,9 @@ def start_exit_scheduler() -> None:
     settings = get_settings()
     if not settings.next_day_exit_enabled or settings.dry_run:
         return
-    from app.exit_scheduler import ExitCalendar, ExitScheduler
-    from app.stock_execution import StockExecution
-    from app.webull_broker import get_trade_client
+    from app.exits.next_day import ExitCalendar, ExitScheduler
+    from app.broker.stocks import StockExecution
+    from app.broker.client import get_trade_client
 
     stop = threading.Event()
     app.state.exit_scheduler_stop = stop
@@ -587,15 +545,14 @@ def start_morning_sell() -> None:
     settings = get_settings()
     if not settings.morning_sell_enabled or settings.dry_run:
         return
-    from app.bullish_ledger import BullishLedger
-    from app.morning_sell import MorningSellCalendar, MorningSellScheduler
-    from app.stock_execution import StockExecution
-    from app.strategy_settings import bullish_stock_account_id
-    from app.webull_broker import get_trade_client
-    from app.webull_submitter import _load_webull_stock_module
+    from app.bullish.ledger import BullishLedger
+    from app.exits.morning_sell import MorningSellCalendar, MorningSellScheduler
+    from app.broker.stocks import StockExecution
+    from app.config.strategy import bullish_stock_account_id
+    from app.broker.client import get_trade_client
+    from app.execution.submitter import _load_webull_stock_module
 
-    # Bullish-runner rows carry no account_id; resolve the stock account once
-    # up front so a misconfiguration is a clear startup log, not a silent skip.
+    # Resolve the one account whose entire equity holdings will be sold.
     try:
         stock_account_id = bullish_stock_account_id(_load_webull_stock_module(), settings)
     except ValueError as exc:
@@ -611,6 +568,9 @@ def start_morning_sell() -> None:
         StockExecution(get_trade_client()),
         calendar,
         resolve_account=lambda: stock_account_id,
+        mark_bullish_rows=(bool(settings.bullish_stock_account_number.strip()) and
+                           settings.bullish_stock_account_number.strip() ==
+                           settings.top_bullish_account_number.strip()),
         dry_run=settings.dry_run,
     )
 

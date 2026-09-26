@@ -1,16 +1,16 @@
+from app.common.paths import ENV_FILE
 """Shared sandbox client, account lookup, and order identifiers."""
 
 import os
 import logging
 import uuid
-from pathlib import Path
 
 from dotenv import load_dotenv
 import sys
 from webull.core.client import ApiClient
 from webull.trade.trade_client import TradeClient
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+load_dotenv(ENV_FILE)
 # ============================================================
 # WEBULL SANDBOX
 # ============================================================

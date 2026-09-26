@@ -10,7 +10,7 @@ calculate a bearish signal from market prices.
 
 ## Decision logic
 
-In [app/optionomics.py](app/optionomics.py),
+In [app/feeds/decisions.py](app/feeds/decisions.py),
 `build_trade_decision_from_optionomics_payload` handles `direction == "bearish"`:
 
 - If `ALLOW_SHORT_SELLING=false` (the default), skip the idea.
@@ -87,8 +87,8 @@ an `ordered` row; it is not a permanent symbol-only exclusion.
 
 ## PUT bracket construction
 
-[app/webull_submitter.py](app/webull_submitter.py) routes `sell_short` to
-[BearishPutOptionExecutor](app/bearish_option_executor.py), which calls
+[app/execution/submitter.py](app/execution/submitter.py) routes `sell_short` to
+[BearishPutOptionExecutor](app/bearish/executor.py), which calls
 `buy_put_with_bracket` in
 [app/webull-buy-combo-option.py](app/webull-buy-combo-option.py).
 
@@ -164,7 +164,7 @@ separate main-service bullish/CALL paths and restart requirements.
 Expiration selection now queries listed PUT contracts without an exact-date
 filter. The hardcoded five-day offset is removed from the shared bearish path;
 main-option.py bearish submission delegates to that path too. The existing
-exact-or-next-listed resolver is shared through `app/option_expiration.py`.
+exact-or-next-listed resolver is shared through `app/options/expiration.py`.
 Empty chains skip execution; no synthetic expiration is used.
 
 ## Delayed PUT quotes for paper testing

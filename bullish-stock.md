@@ -173,7 +173,7 @@ The trade identifier is `trade_id`, then `id`, then `bullish:SYMBOL`. Feed
 aggregate premium is metadata, not the price used to purchase stock. No local
 bullish signal or additional premium-ranking threshold is calculated.
 
-[app/webull_quotes.py](app/webull_quotes.py) queries the Webull stock snapshot.
+[app/broker/quotes.py](app/broker/quotes.py) queries the Webull stock snapshot.
 It requires exactly one matching symbol, a positive finite price and a valid
 `last_trade_time`. Trades older than five minutes or over five seconds in the
 future are rejected. This is the snapshot's last trade price, not the current
@@ -184,7 +184,7 @@ ask. A LIMIT at that price may not fill.
 Configure `TOP_BULLISH_ACCOUNT_NUMBER` in `.env` with the intended sandbox account
 number. Before claiming a non-dry-run symbol, the runner trims this value and
 calls the stock helper's `get_account_id(account_number=...)`, which is the
-shared function in [app/webull_broker.py](app/webull_broker.py).
+shared function in [app/broker/client.py](app/broker/client.py).
 
 The broker list must contain exactly one matching `account_number` with a valid
 API `account_id`. Missing configuration, missing matches or ambiguous matches
@@ -241,7 +241,7 @@ guaranteed. This runner does not register next-day stock exit jobs; setting
 
 ## Ledger, duplicate protection and failures
 
-[app/bullish_ledger.py](app/bullish_ledger.py) stores rows in
+[app/bullish/ledger.py](app/bullish/ledger.py) stores rows in
 `top_bullish_trades` within `DATABASE_PATH` (default `bot.sqlite3`). Trade ID is
 unique and symbol is independently unique, case-insensitively. An atomic claim
 precedes order submission, after validation, quote retrieval and live account
@@ -272,7 +272,7 @@ or exit reconciliation. DAY bracket exits do not provide next-session coverage.
 
 - [app/main-top-bullish.py](app/main-top-bullish.py): orchestration and scheduling.
 - [app/top-bullish.py](app/top-bullish.py): bullish feed retrieval.
-- [app/strategy_settings.py](app/strategy_settings.py): configurable percentages.
+- [app/config/strategy.py](app/config/strategy.py): configurable percentages.
 - [app/webull-buy-combo-stock.py](app/webull-buy-combo-stock.py): broker bracket.
 - [tests/test_strategy_settings.py](tests/test_strategy_settings.py): custom
   bullish percentages in order construction and settings validation.

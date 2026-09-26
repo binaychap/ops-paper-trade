@@ -17,7 +17,7 @@ In the bot's `.env` on the server:
 Start uvicorn bound to all interfaces (the default is localhost-only):
 
 ```bash
-cd ~/ops-paper-trade
+cd ~/ops-trade-idea
 PYTHONPATH=. uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -28,7 +28,7 @@ PYTHONPATH=. nohup uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 >> uvi
 ```
 
 Logs: uvicorn has no default log file — it writes to stdout/stderr, which the
-command above captures in `~/ops-paper-trade/uvicorn.log`. Watch it live with
+command above captures in `~/ops-trade-idea/uvicorn.log`. Watch it live with
 `tail -f uvicorn.log`. To keep a copy of the old log before restarting,
 `mv uvicorn.log uvicorn.log.bak` first.
 
@@ -58,12 +58,12 @@ sudo service iptables save                             # persist across reboots
 
 OCI Console → Networking → Virtual Cloud Networks → subnet → Security list → Add Ingress Rules:
 
-| Field | Value |
-|---|---|
-| Source CIDR | `0.0.0.0/0` |
-| IP Protocol | TCP |
-| Source port range | All |
-| Destination port range | `8000` |
+| Field                  | Value       |
+| ---------------------- | ----------- |
+| Source CIDR            | `0.0.0.0/0` |
+| IP Protocol            | TCP         |
+| Source port range      | All         |
+| Destination port range | `8000`      |
 
 Source port = the client's ephemeral port (leave as All). Destination port = the port the app listens on.
 
@@ -96,3 +96,10 @@ curl -H "Authorization: Bearer <IOS_API_KEY>" http://<oracle-public-ip>:8000/api
 ## 5. iOS app settings
 
 Settings tab → Server URL `http://<oracle-public-ip>:8000` → paste the same `IOS_API_KEY` → Save API key to Keychain → Test connection. No same-Wi-Fi needed; the server has a public IP.
+
+## run server
+
+cd ~/ops-trade-idea
+pkill -f "uvicorn app.main:app" 2>/dev/null; sleep 2
+export IOS_API_KEY=<your key>
+nohup env PYTHONPATH=. uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 > uvicorn.log 2>&1 &

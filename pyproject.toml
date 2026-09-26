@@ -1,5 +1,5 @@
 [project]
-name = "ops-paper-trade"
+name = "ops-trade-idea"
 version = "0.1.0"
 description = "Optionomics Trade Ideas polling bot with paper trading"
 readme = "README.md"

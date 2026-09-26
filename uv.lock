@@ -874,7 +874,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ops-paper-trade"
+name = "ops-trade-idea"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

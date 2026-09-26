@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import webull_broker
+from app.broker import client as webull_broker
 
 
 def test_bullish_passes_selected_account_to_order(tmp_path):
@@ -10,7 +10,7 @@ def test_bullish_passes_selected_account_to_order(tmp_path):
     from pathlib import Path
     from unittest.mock import Mock
     spec = importlib.util.spec_from_file_location(
-        'bullish_account_test', Path(__file__).parents[1] / 'app/main-top-bullish.py')
+        'bullish_account_test', Path(__file__).parents[1] / 'app/bullish/runner.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     stock = SimpleNamespace(get_account_id=Mock(return_value='selected'),
@@ -20,6 +20,7 @@ def test_bullish_passes_selected_account_to_order(tmp_path):
                                  max_notional_usd=250, account_number='wanted'),
         stock_loader=lambda: stock,
         quote_provider=lambda symbol: {'price': 100},
+        market_open=lambda: True,
     )
     assert bot.process({'symbol': 'TEST', 'total_premium': 100, 'trade_count': 1})['status'] == 'submitted'
     stock.get_account_id.assert_called_once_with(account_number='wanted')

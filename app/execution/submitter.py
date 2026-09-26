@@ -1,33 +1,19 @@
 from __future__ import annotations
 
-import importlib.util
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
-from app.strategy_settings import exit_percentages, options_margin_account_id, bullish_stock_account_id
+from app.config.strategy import exit_percentages, options_margin_account_id, bullish_stock_account_id
 
 
 def _load_webull_stock_module() -> Any:
-    module_path = Path(__file__).resolve().parent / "webull-buy-combo-stock.py"
-    spec = importlib.util.spec_from_file_location("webull_combo_stock", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load Webull stock combo module from {module_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from importlib import import_module
+    return import_module('app.bullish.stock_bracket')
 
 
 def _load_webull_option_module() -> Any:
-    module_path = Path(__file__).resolve().parent / "webull-buy-combo-option.py"
-    spec = importlib.util.spec_from_file_location("webull_combo_option", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load Webull option module from {module_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from importlib import import_module
+    return import_module('app.options.brackets')
 
 
 def _is_webull_rate_limit_error(exc: BaseException) -> bool:
@@ -74,9 +60,9 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
         reference_level = max(float(d.get("notional_usd") or 0.0) / 100.0, 1.0)
 
     if action == "sell_short":
-        from app.webull_quotes import QuoteError
+        from app.broker.quotes import QuoteError
         profit_percent, stop_loss_percent = exit_percentages(settings, "bearish")
-        from app.bearish_option_executor import BearishPutOptionExecutor
+        from app.bearish.executor import BearishPutOptionExecutor
         option_module = _load_webull_option_module()
         executor = BearishPutOptionExecutor(module=option_module)
         expiry = None  # Resolve the earliest future listed PUT expiration from the chain.
@@ -115,9 +101,9 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
         }
 
     if payload is not None and getattr(payload, "direction", None) == "neutral":
-        from app.iron_condor_option_executor import IronCondorOptionExecutor, CondorValidationError
-        from app.ledger import Ledger
-        from app.webull_quotes import QuoteError
+        from app.ironcondor.executor import IronCondorOptionExecutor, CondorValidationError
+        from app.persistence.ledger import Ledger
+        from app.broker.quotes import QuoteError
 
         ledger = Ledger(settings.database_path)
         reservation = f"iron-condor:{fingerprint}"
@@ -197,8 +183,8 @@ def submit_paper_order(decision: Any, settings: Any, fingerprint: str, payload: 
     if getattr(settings, "next_day_exit_enabled", False):
         if action != "buy":
             raise ValueError("Next-day stock exits support long buy entries only")
-        from app.ledger import Ledger
-        from app.stock_execution import StockExecution
+        from app.persistence.ledger import Ledger
+        from app.broker.stocks import StockExecution
 
         ledger = Ledger(settings.database_path)
         if ledger.has_active_exit_job(account_id=account_id, symbol=symbol):

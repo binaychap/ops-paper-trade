@@ -8,10 +8,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from app.bullish_ledger import BullishLedger
-from app.webull_quotes import current_stock_quote
+from app.bullish.ledger import BullishLedger
+from app.broker.quotes import current_stock_quote
 
-spec = importlib.util.spec_from_file_location('app.main_top_bullish', Path(__file__).parents[1] / 'app/main-top-bullish.py')
+spec = importlib.util.spec_from_file_location('app.main_top_bullish', Path(__file__).parents[1] / 'app/bullish/runner.py')
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 ITEM = {'symbol': 'AAPL', 'total_premium': 25545729.7, 'trade_count': 1277}
@@ -157,7 +157,7 @@ def test_quote_validation(price, age):
 
 
 def test_quote_error_is_actionable_without_exposing_sdk_errors(tmp_path):
-    from app.webull_quotes import QuoteError
+    from app.broker.quotes import QuoteError
     bot = runner(tmp_path, dry_run=False)
     bot.quote_provider.side_effect = QuoteError('Stock quote is stale: maximum 300 seconds')
     assert bot.run()[0]['reason'] == 'Quote unavailable: Stock quote is stale: maximum 300 seconds'

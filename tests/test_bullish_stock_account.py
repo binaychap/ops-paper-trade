@@ -2,7 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import webull_broker, webull_submitter
+from app.broker import client as webull_broker
+from app.execution import submitter as webull_submitter
 from app.main import Settings
 
 

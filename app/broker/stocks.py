@@ -101,6 +101,27 @@ class StockExecution:
                 total += quantity(row['quantity'])
         return total
 
+    def stock_positions(self, account_id):
+        """Return all positive equity positions in exactly the requested account."""
+        rows = checked_json(self.client.account_v2.get_account_position(account_id))
+        if not isinstance(rows, list):
+            raise ValueError('Missing position list; reconciliation deferred')
+        positions = {}
+        for row in rows:
+            if not isinstance(row, dict) or 'instrument_type' not in row:
+                raise ValueError('Malformed position response')
+            if row['instrument_type'] != 'EQUITY':
+                continue
+            symbol = row.get('symbol')
+            if not isinstance(symbol, str) or not symbol.strip():
+                raise ValueError('Missing equity symbol')
+            shares = Decimal(str(row['quantity']))
+            if not shares.is_finite():
+                raise ValueError('Invalid broker quantity')
+            symbol = symbol.strip().upper()
+            positions[symbol] = positions.get(symbol, Decimal(0)) + shares
+        return {symbol: shares for symbol, shares in positions.items() if shares > 0}
+
     def cancel(self, account_id, order_id):
         # Acceptance is not confirmation. The scheduler must query again.
         checked_json(self.client.order_v3.cancel_order(account_id, order_id))

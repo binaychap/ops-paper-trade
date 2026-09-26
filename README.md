@@ -1,4 +1,4 @@
-# Ops Paper Trade
+# Ops Trade Idea
 
 This project is a paper-trading automation loop that consumes Optionomics trade ideas, validates them against a deterministic risk model, and then prepares or submits a paper order through Webull. It is designed to run as a polling service rather than an external listener.
 
@@ -19,11 +19,11 @@ The core entry point is [app/main.py](app/main.py). It manages configuration, fe
 
 The app is intentionally simple and layered around a few core pieces:
 
-- [app/optionomics_client.py](app/optionomics_client.py): fetches trade ideas from the Optionomics API
+- [app/feeds/optionomics_client.py](app/feeds/optionomics_client.py): fetches trade ideas from the Optionomics API
 - [app/main.py](app/main.py): orchestrates validation, risk gates, execution, and startup logic
 - [app/webull-buy-combo-stock.py](app/webull-buy-combo-stock.py): stock bracket order submission used by the polling service
 - [app/webull-buy-combo-option.py](app/webull-buy-combo-option.py): option bracket order submission used by `app/main-option.py`
-- [app/webull_broker.py](app/webull_broker.py): shared sandbox client, account lookup, and order IDs
+- [app/broker/client.py](app/broker/client.py): shared sandbox client, account lookup, and order IDs
 - [app/webull-option-chain.py](app/webull-option-chain.py): option-chain lookup utilities
 - [bot.sqlite3](bot.sqlite3): local SQLite ledger used for dedupe and auditing
 - [tests/test_apply_risk_gates.py](tests/test_apply_risk_gates.py): regression tests for the decision/risk logic
@@ -87,7 +87,7 @@ curl http://127.0.0.1:8000/health
 ### Run test
 
 ```
-cd /Users/binayrai/github/ops-paper-trade && PYTHONPATH=. .venv/bin/python -m pytest tests/test_exit_scheduler.py -q
+PYTHONPATH=. .venv/bin/python -m pytest tests/test_exit_scheduler.py -q
 ```
 
 ## Trade status dashboard
@@ -120,7 +120,7 @@ not proof that a worker is running; this preview command disables startup hooks.
 
 ## iOS trading API
 
-`app/api_trading.py` exposes a bearer-authenticated trading surface for the
+`app/api/trading.py` exposes a bearer-authenticated trading surface for the
 iOS companion client, mounted at `/api/trading`. Set `IOS_API_KEY` in `.env`
 (added to `.env.example`, empty by default). Every request needs
 `Authorization: Bearer <IOS_API_KEY>`; a missing or wrong token returns 401,
@@ -214,13 +214,12 @@ on a single host with the same local database, not distributed deployments.
 
 ## Morning sell (10 AM ET)
 
-An optional worker sells every bot-tracked stock holding at market once per
-trading day at **10:00 AM New York time**, regardless of profit or loss. Each
-pass queries the SQLite ledger for the holdings table(s) — `scheduled_stock_exits`
-rows that are not complete, plus `top_bullish_trades` rows with status
-`'submitted'` — then sells each symbol at market through the Webull sell API
-(`SELL / MARKET / DAY / CORE`), the same order shape the scheduled-exit worker
-uses for its market leg.
+An optional worker submits market sells for **all positive stock positions in
+`BULLISH_STOCK_ACCOUNT_NUMBER`**, including manual/untracked holdings, once per
+trading day at **10:00 AM New York time**, regardless of profit or purchase date.
+It reads broker positions and rechecks each symbol before submitting its full
+current quantity (`SELL / MARKET / DAY / CORE`). Options, short positions and
+other accounts are excluded.
 
 ```env
 MORNING_SELL_ENABLED=false
@@ -231,18 +230,17 @@ MORNING_SELL_POLL_SECONDS=60
 
 The feature is disabled by default. `DRY_RUN=true` prevents worker startup and
 all broker submissions. After sandbox validation, set `MORNING_SELL_ENABLED=true`
-and `DRY_RUN=false` and restart the service. Bullish-runner holdings carry no
-account id in the ledger, so they resolve to `BULLISH_STOCK_ACCOUNT_NUMBER`;
-set it before enabling. A missed 10 AM window is retried at the next session;
-weekends and exchange holidays are skipped via `exchange-calendars` (`XNYS`).
+and `DRY_RUN=false` and restart the main service. Set
+`BULLISH_STOCK_ACCOUNT_NUMBER` before enabling. A late start runs the pass while
+that day's session is open; after close it waits until the next trading day.
+Weekends and exchange holidays are skipped using the XNYS calendar.
 
-Safety mirrors the exit worker: the sell quantity is the broker-confirmed
-position capped at the tracked quantity, and the submission intent
-(`morning-sell:<date>:<account>:<symbol>`) is reserved in the `events` table
-before the network call, so restarts never double-sell. Sold rows are marked
-complete (`scheduled_stock_exits`) or `sold` (`top_bullish_trades`) so the
-next-day exit worker does not sell them again. If both workers are enabled,
-whichever runs first wins; the other sees the completed row and skips it.
+Submission intents (`morning-sell:<date>:<account>:<symbol>`) are stored in
+`events` before sending orders and block same-day retries, including failures.
+Matching scheduled-exit rows are marked complete after submission; bullish rows
+are marked sold only when TOP_BULLISH_ACCOUNT_NUMBER matches the selected
+account. These statuses do not establish fills. Existing bracket orders are
+not cancelled and sell fills are not reconciled by this worker.
 
 Inspect state without modifying it:
 
@@ -259,8 +257,8 @@ For unresolved submissions, inspect the saved entry/exit client IDs and broker
 order history before making any manual correction. Do not delete a job or clear
 its market-order attempts to force a retry: that removes duplicate-sale protection.
 
-Implementation: `app/exit_scheduler.py` (calendar and reconciliation),
-`app/stock_execution.py` (strict Webull adapter), and `app/ledger.py` (persistent
+Implementation: `app/exits/next_day.py` (calendar and reconciliation),
+`app/broker/stocks.py` (strict Webull adapter), and `app/persistence/ledger.py` (persistent
 jobs). Fake-broker tests cover recovery and cancellation races; actual sandbox
 acceptance of GTC bracket exits and account-specific response shapes still needs
 verification before enabling the worker.
@@ -625,7 +623,7 @@ services after changing these values; existing broker orders are not modified.
 | Bearish PUT via `main.py` or `main-option.py` | `OPTIONS_MARGIN_ACCOUNT_NUMBER` |
 | Neutral iron condor via either main entry point | `OPTIONS_MARGIN_ACCOUNT_NUMBER` |
 
-These paths share `app.webull_broker.get_account_id(account_number=...)`.
+These paths share `app.broker.client.get_account_id(account_number=...)`.
 Each trims the configured account number, requires a nonempty value, queries the
 broker account list and requires exactly one matching `account_number` with an
 API `account_id`. Missing or ambiguous matches stop submission; these paths do
@@ -670,3 +668,35 @@ Neutral iron-condor submissions use the independent
 must have valid bid/ask prices and timestamps within this limit. The five-second
 future tolerance remains unchanged. Credit and exit prices use those delayed
 premiums. Restart the service to apply changes.
+
+
+## Package layout
+
+Application code is grouped by functionality:
+
+```text
+app/
+  main.py           # FastAPI composition, polling and worker startup
+  bullish/          # Bullish feed, runner, ledger and stock brackets
+  bearish/          # Bearish PUT execution
+  ironcondor/       # Neutral iron-condor execution
+  broker/           # Webull clients, quotes, positions and errors
+  feeds/            # Optionomics retrieval and decision normalization
+  persistence/      # SQLite ledger and locks
+  exits/            # Morning sells and next-session exit workers
+  options/          # Shared option contracts, brackets and alternate runner
+  execution/        # Strategy dispatch and order submission
+  config/           # Runtime and strategy settings
+  api/              # Authenticated trading endpoints
+  ui/               # Dashboard, records and static assets
+  common/           # Feature-independent paths
+```
+
+Use `uv run python -m app.bullish.runner` for bullish polling (`--once` for one
+scan). The API command remains `uvicorn app.main:app`. Existing hyphenated
+scripts such as `app/main-top-bullish.py` remain compatibility entry points,
+so installed systemd commands continue working. Internal imports use the new
+packages; shared option helpers use standard imports rather than file loaders.
+The older alternate options runner lives at `app.options.runner`.
+Repository `.env` discovery and dashboard asset URLs are unchanged. Database paths,
+schemas and strategy behavior are unchanged by this reorganization.

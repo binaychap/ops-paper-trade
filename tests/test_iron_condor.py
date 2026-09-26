@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.iron_condor_option_executor import CondorValidationError, IronCondorOptionExecutor
-from app.webull_quotes import QuoteError
+from app.ironcondor.executor import CondorValidationError, IronCondorOptionExecutor
+from app.broker.quotes import QuoteError
 
 NOW = datetime(2026, 9, 16, 15, tzinfo=UTC)
 EXPIRY = '2026-10-16'
@@ -132,8 +132,8 @@ def test_listed_expiry_after_requested_date_is_used():
 
 
 def setup_submission(monkeypatch, tmp_path, *, timeout=False):
-    from app import webull_submitter
-    import app.iron_condor_option_executor as mod
+    from app.execution import submitter as webull_submitter
+    import app.ironcondor.executor as mod
     calls = []
     expiry = (datetime.now(UTC) + timedelta(days=30)).date().isoformat()
     rows, quotes = market(expiry)
@@ -163,7 +163,7 @@ def setup_submission(monkeypatch, tmp_path, *, timeout=False):
 
 
 def test_submitter_persists_orders_and_suppresses_repeat(monkeypatch, tmp_path):
-    from app.webull_submitter import submit_paper_order
+    from app.execution.submitter import submit_paper_order
     settings, decision, payload, calls = setup_submission(monkeypatch, tmp_path)
     first = submit_paper_order(decision, settings, 'fingerprint', payload)
     assert first['option']['type'] == 'IRON_CONDOR'
@@ -175,7 +175,7 @@ def test_submitter_persists_orders_and_suppresses_repeat(monkeypatch, tmp_path):
 
 
 def test_timeout_does_not_replay_order(monkeypatch, tmp_path):
-    from app.webull_submitter import submit_paper_order
+    from app.execution.submitter import submit_paper_order
     settings, decision, payload, calls = setup_submission(monkeypatch, tmp_path, timeout=True)
     with pytest.raises(TimeoutError):
         submit_paper_order(decision, settings, 'fingerprint', payload)
@@ -188,7 +188,7 @@ def test_timeout_does_not_replay_order(monkeypatch, tmp_path):
 
 
 def test_dry_run_never_loads_broker_or_reserves(monkeypatch, tmp_path):
-    from app import webull_submitter
+    from app.execution import submitter as webull_submitter
     monkeypatch.setattr(webull_submitter, '_load_webull_option_module', lambda: pytest.fail('broker loaded'))
     settings = SimpleNamespace(dry_run=True, database_path=str(tmp_path / 'unused.sqlite3'))
     result = webull_submitter.submit_paper_order(dict(action='buy', strategy='iron_condor'), settings, 'fp')
@@ -229,7 +229,7 @@ def test_neutral_decision_and_risk_gates():
 @pytest.mark.parametrize('levels', [{}, {'entry': 100, 'target': 110, 'stop': 90},
                                     {'entry': 100, 'target': 90, 'stop': float('inf')}])
 def test_invalid_neutral_feed_levels_skip(levels):
-    from app.optionomics import build_trade_decision_from_optionomics_payload
+    from app.feeds.decisions import build_trade_decision_from_optionomics_payload
     decision = build_trade_decision_from_optionomics_payload(
         dict(symbol='AAPL', direction='neutral', levels=levels),
         SimpleNamespace(max_notional_usd=250, allow_short_selling=False))
@@ -241,7 +241,7 @@ def test_legacy_neutral_path_uses_shared_executor(monkeypatch, tmp_path):
     from pathlib import Path
     from app import main
     settings, decision, payload, calls = setup_submission(monkeypatch, tmp_path)
-    path = Path(__file__).resolve().parents[1] / 'app/main-option.py'
+    path = Path(__file__).resolve().parents[1] / 'app/options/runner.py'
     spec = importlib.util.spec_from_file_location('legacy_condor_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -255,7 +255,7 @@ def test_legacy_neutral_path_uses_shared_executor(monkeypatch, tmp_path):
 
 
 def test_contract_pagination(monkeypatch):
-    from app.iron_condor_option_executor import select_contracts
+    from app.ironcondor.executor import select_contracts
     from decimal import Decimal
     rows, _ = market()
     pages = [([{'instrument_id': str(i)} for i in range(500)]), rows]
@@ -282,7 +282,7 @@ def test_collapsed_exit_prices_block_submission():
 
 
 def test_configured_condor_exit_percentages(monkeypatch, tmp_path):
-    from app.webull_submitter import submit_paper_order
+    from app.execution.submitter import submit_paper_order
     settings, decision, payload, calls = setup_submission(monkeypatch, tmp_path)
     settings.iron_condor_profit_percent = 20
     settings.iron_condor_stop_loss_percent = 10
@@ -307,7 +307,7 @@ def test_condor_configurable_quote_age(age, limit, accepted):
 
 
 def test_submitter_passes_condor_quote_limit(monkeypatch, tmp_path):
-    from app.webull_submitter import submit_paper_order
+    from app.execution.submitter import submit_paper_order
     settings, decision, payload, calls = setup_submission(monkeypatch, tmp_path)
     settings.iron_condor_quote_max_age_seconds = 1200
     original = IronCondorOptionExecutor.submit

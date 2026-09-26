@@ -1,4 +1,82 @@
-# Ops Paper Trade — project memory
+# Ops Trade Idea — project memory
+
+## Project name (2026-09-26)
+
+Project metadata and uv lock entry now use ops-trade-idea. README/dashboard
+branding and new-deployment examples use Ops Trade Idea / ops-trade-idea,
+including the optional ops-trade-idea-bullish unit. Existing checkout directory,
+Git remote, installed services, .env and database locations were not renamed.
+The deployment guide notes migration requirements for existing installations.
+
+## Additional functional boundaries (2026-09-25)
+
+The initial common package has been separated into broker (clients, quotes,
+stocks, errors), feeds (Optionomics client/decisions), persistence (ledger),
+exits (morning_sell/next_day), options (shared contract/bracket tooling and
+alternate runner), execution (submitter), and config (runtime/strategy settings).
+Trading endpoints moved from ui to api/trading.py. common/paths.py centralizes
+repository-root .env paths; main Settings remains importable via app.main while
+its definition lives in config/settings.py. UI contains dashboard/records/assets.
+Updated imports, compatibility launchers, tests and source references in docs.
+208 tests pass; no settings, database schema, trading policy or deployment changed.
+These locations supersede the initial functional-package map below.
+
+## Functional packages (2026-09-25)
+
+Code now lives in app/bullish (feed, runner, ledger, stock brackets), app/bearish
+(PUT executor), app/ironcondor (neutral executor), app/ui (dashboard, records,
+trading API and static assets), and app/common (broker, quotes, settings, ledger,
+feed decisions, option builders and exit workers including morning_sell).
+app/main.py remains the FastAPI composition/polling entry point. Hyphenated
+root scripts are compatibility launchers; python -m app.bullish.runner is the
+canonical bullish command. Internal imports and tests use the new paths.
+Builder loaders now use normal package imports. Root .env discovery, database
+paths/schema, UI routes and installed systemd commands are preserved. Older
+source paths in historical entries below refer to the pre-reorganization layout.
+Two existing time-dependent bullish tests now inject an open-market clock.
+Validation: 208 tests pass; package compilation and focused undefined-name/unused
+import checks pass. Fixed the older option runner's missing ZoneInfo import.
+No services started, broker calls made, or environment values changed.
+
+## Account-wide morning sells (2026-09-24)
+
+Morning sell now enumerates broker equity positions only in the resolved
+BULLISH_STOCK_ACCOUNT_NUMBER, including untracked/manual stocks. It rechecks
+each holding and submits its full positive quantity, with no ledger quantity
+cap. StockExecution.stock_positions excludes options, zero and short positions.
+Daily reservations remain. Matching scheduled exits are marked complete after
+submission; bullish rows are marked sold only if configured stock and bullish
+runner accounts match. Existing bracket cancellation and fill reconciliation
+limitations remain. This supersedes prior tracked-only scope/account routing
+observations. Ten mocked morning-sell tests pass including untracked holdings,
+account isolation, quantity, position filtering and restart reservation checks.
+No broker orders placed; local .env and deployment were not changed.
+
+## Morning sell review limitations (2026-09-24)
+
+Source review: morning sell does not cancel existing bracket exits or confirm
+market-sell fills before marking source rows sold/complete. Failed/reserved
+symbols are not retried that day; the in-memory daily pass also prevents later
+holdings being picked up until another day (unless restarted). It selects all
+eligible tracked stocks regardless of purchase date, not options or every broker
+holding. Bullish-runner rows resolve through BULLISH_STOCK_ACCOUNT_NUMBER even
+though entries use TOP_BULLISH_ACCOUNT_NUMBER; differing accounts can misroute
+position lookup/sales. Dry-run direct scheduler calls still query positions,
+although application startup suppresses the worker entirely under DRY_RUN.
+Eight existing mocked tests pass but do not verify cancellation/fill reconciliation.
+These findings qualify the earlier safety claims below; no execution changed.
+
+## Bullish overnight scans disabled (2026-09-24)
+
+Restored market-hours gates in `app/main-top-bullish.py` using `ExitCalendar`
+with explicit New York timezone and XNYS sessions. Closed sessions skip feed,
+quotes and orders, including dry runs. Checks run before feed/per-item work,
+after quotes before claiming, and in the before-submit callback. The process
+stays alive and checks every 300 seconds; holidays, DST and early closes apply.
+A close at the submission callback records a skipped permanent claim.
+This supersedes the older observation below that these guards were absent.
+Verified: all 25 tests in `tests/test_top_bullish.py` passed with the local venv,
+including closed-market and close-during-submission cases. No broker calls made.
 
 ## Morning sell at 10 AM ET (2026-09-24)
 

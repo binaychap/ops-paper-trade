@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.strategy_settings import options_margin_account_id
-from app import webull_broker
+from app.config.strategy import options_margin_account_id
+from app.broker import client as webull_broker
 
 
 def test_selects_exact_account_instead_of_first(monkeypatch):

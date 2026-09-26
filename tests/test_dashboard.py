@@ -5,8 +5,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main
-from app.dashboard import read_trades
-from app.ledger import Ledger
+from app.ui.dashboard import read_trades
+from app.persistence.ledger import Ledger
 
 
 @pytest.fixture

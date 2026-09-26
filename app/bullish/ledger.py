@@ -4,7 +4,7 @@ import json
 import sqlite3
 from contextlib import closing
 
-from app.ledger import Ledger, utc_now_iso
+from app.persistence.ledger import Ledger, utc_now_iso
 
 
 class BullishLedger(Ledger):

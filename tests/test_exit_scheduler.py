@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.exit_scheduler import ExitCalendar, ExitScheduler
-from app.ledger import Ledger
-from app.stock_execution import StockExecution, StockOrder
+from app.exits.next_day import ExitCalendar, ExitScheduler
+from app.persistence.ledger import Ledger
+from app.broker.stocks import StockExecution, StockOrder
 
 
 def dt(value):
@@ -305,7 +305,7 @@ def test_market_order_is_normal_sell_without_limit():
 
 
 def test_tracking_persisted_before_bracket_submission_with_gtc_exits():
-    spec = importlib.util.spec_from_file_location('stock_test', Path(__file__).parents[1] / 'app/webull-buy-combo-stock.py')
+    spec = importlib.util.spec_from_file_location('stock_test', Path(__file__).parents[1] / 'app/bullish/stock_bracket.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     tracked = {}
@@ -323,8 +323,8 @@ def test_tracking_persisted_before_bracket_submission_with_gtc_exits():
 
 def test_dry_run_never_loads_broker_or_registers_job(monkeypatch, tmp_path):
     from app.main import Settings
-    from app.webull_submitter import submit_paper_order
-    monkeypatch.setattr('app.webull_submitter._load_webull_stock_module', lambda: pytest.fail('broker loaded'))
+    from app.execution.submitter import submit_paper_order
+    monkeypatch.setattr('app.execution.submitter._load_webull_stock_module', lambda: pytest.fail('broker loaded'))
     settings = Settings(_env_file=None, DRY_RUN=True, NEXT_DAY_EXIT_ENABLED=True, DATABASE_PATH=str(tmp_path / 'dry.sqlite3'))
     assert submit_paper_order({'action': 'buy', 'symbol': 'AAPL'}, settings, 'test')['dry_run']
     assert not (tmp_path / 'dry.sqlite3').exists()
@@ -363,8 +363,8 @@ def test_only_one_active_job_per_account_symbol(setup):
 
 def test_scheduled_submission_persists_intent_even_if_broker_times_out(monkeypatch, tmp_path):
     from app.main import Settings
-    from app.webull_submitter import submit_paper_order
-    spec = importlib.util.spec_from_file_location('scheduled_stock', Path(__file__).parents[1] / 'app/webull-buy-combo-stock.py')
+    from app.execution.submitter import submit_paper_order
+    spec = importlib.util.spec_from_file_location('scheduled_stock', Path(__file__).parents[1] / 'app/bullish/stock_bracket.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     database = str(tmp_path / 'scheduled.sqlite3')
@@ -380,7 +380,7 @@ def test_scheduled_submission_persists_intent_even_if_broker_times_out(monkeypat
     )
     monkeypatch.setattr(module, 'get_account_id', lambda **kw: 'test')
     monkeypatch.setattr(module, 'get_trade_client', lambda: client)
-    monkeypatch.setattr('app.webull_submitter._load_webull_stock_module', lambda: module)
+    monkeypatch.setattr('app.execution.submitter._load_webull_stock_module', lambda: module)
     settings = Settings(_env_file=None, DRY_RUN=False, BULLISH_STOCK_ACCOUNT_NUMBER="test-cash", NEXT_DAY_EXIT_ENABLED=True, DATABASE_PATH=database)
     decision = {'action': 'buy', 'symbol': 'AAPL', 'notional_usd': 250}
     with pytest.raises(TimeoutError):
@@ -405,7 +405,7 @@ def test_worker_disabled_in_dry_run(monkeypatch):
 
 def test_missing_entry_waits_and_backs_off_across_restart(setup):
     from datetime import timedelta
-    from app.stock_execution import OrderNotFound
+    from app.broker.stocks import OrderNotFound
     ledger, broker, worker = setup
     original_order = broker.order
     calls = []
@@ -430,7 +430,7 @@ def test_missing_entry_waits_and_backs_off_across_restart(setup):
 
 @pytest.mark.parametrize('raised', [True, False])
 def test_webull_missing_order_response_is_recognized(raised):
-    from app.stock_execution import OrderNotFound
+    from app.broker.stocks import OrderNotFound
     from webull.core.exception.exceptions import ServerException
     def query(*args):
         if raised:
@@ -452,7 +452,7 @@ def test_other_parameter_errors_are_not_classified_as_missing_orders():
 
 def test_sdk_error_logs_do_not_emit_signed_request():
     import logging
-    from app.webull_broker import SafeSdkLogFilter
+    from app.broker.client import SafeSdkLogFilter
     record = logging.LogRecord('webull.core.client', logging.ERROR, '', 0,
                                'ServerException Request:%s', ('x-app-key=example x-signature=example',), None)
     assert SafeSdkLogFilter().filter(record)

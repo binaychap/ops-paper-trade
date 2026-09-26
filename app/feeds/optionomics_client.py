@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from app.common.paths import ENV_FILE
+
 import json
 import logging
 import os
-from pathlib import Path
 from typing import Any
 from urllib import error, request
 
@@ -13,7 +14,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("optionomics_client")
 logger.setLevel(logging.INFO)
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+load_dotenv(ENV_FILE)
 
 def build_headers(user_email: str, api_key: str, *, browser_fallback: bool = False) -> dict[str, str]:
     headers = {

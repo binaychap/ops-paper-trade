@@ -166,10 +166,10 @@ completed exit. The stock next-day exit scheduler does not manage this strategy.
 
 ## Source and verification
 
-- [app/optionomics.py](app/optionomics.py): neutral decision and level validation.
+- [app/feeds/decisions.py](app/feeds/decisions.py): neutral decision and level validation.
 - [app/main.py](app/main.py): polling, market-hours check, deduplication and status.
-- [app/webull_submitter.py](app/webull_submitter.py): routing and durable reservation.
-- [app/iron_condor_option_executor.py](app/iron_condor_option_executor.py): contracts,
+- [app/execution/submitter.py](app/execution/submitter.py): routing and durable reservation.
+- [app/ironcondor/executor.py](app/ironcondor/executor.py): contracts,
   quotes, risk calculation and complete bracket construction.
 - [tests/test_iron_condor.py](tests/test_iron_condor.py): mocked end-to-end polling,
   four-leg reversals, pricing, risk limits, invalid data and timeout/replay checks.

@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from app.records import read_records
+from app.ui.records import read_records
 
 
 def test_time_range_and_read_only(tmp_path):

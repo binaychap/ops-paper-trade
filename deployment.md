@@ -1,4 +1,11 @@
-# Deploy Ops Paper Trade on Oracle Cloud
+# Deploy Ops Trade Idea on Oracle Cloud
+
+The names and paths below are for new `ops-trade-idea` deployments. Existing
+`ops-paper-trade` installations keep their current directory, database path and
+service names until migrated. Stop and disable the old units before enabling
+replacement units, retain the existing SQLite database and `.env`, and rebuild
+`.venv` with `uv sync` if the checkout directory moves (scripts contain absolute
+paths). Editing this runbook does not rename installed services or move data.
 
 This guide deploys one Oracle Linux 9 VM on Oracle Cloud with persistent SQLite storage, a private FastAPI
 dashboard, and optional trading workers. It does not deploy anything by itself.
@@ -28,7 +35,7 @@ Use **Compute → Instances → Create instance** in your home region.
 
 | Setting                                   | Suggested choice                                |
 | ----------------------------------------- | ----------------------------------------------- |
-| Name                                      | `ops-paper-trade`                               |
+| Name                                      | `ops-trade-idea`                               |
 | Image                                     | Oracle Linux 9                                  |
 | Shape                                     | Always Free-eligible `VM.Standard.A1.Flex`      |
 | CPU / memory                              | Start with 1 OCPU and 4 GB RAM                  |
@@ -159,8 +166,8 @@ For a private repository, configure a read-only deploy key or appropriate Git
 credentials first.
 
 ```bash
-git clone YOUR_REPOSITORY_URL ~/ops-paper-trade
-cd ~/ops-paper-trade
+git clone YOUR_REPOSITORY_URL ~/ops-trade-idea
+cd ~/ops-trade-idea
 uv python install 3.12
 uv sync --locked --python 3.12
 ```
@@ -177,7 +184,7 @@ own credentials privately. Start with these operating settings:
 DRY_RUN=true
 OPTIONOMICS_POLL_ENABLED=false
 NEXT_DAY_EXIT_ENABLED=false
-DATABASE_PATH=/var/lib/ops-paper-trade/bot.sqlite3
+DATABASE_PATH=/var/lib/ops-trade-idea/bot.sqlite3
 BULLISH_STOCK_ACCOUNT_NUMBER=YOUR_SANDBOX_CASH_ACCOUNT_NUMBER
 TOP_BULLISH_ACCOUNT_NUMBER=YOUR_SANDBOX_MARGIN_ACCOUNT_NUMBER
 OPTIONS_MARGIN_ACCOUNT_NUMBER=YOUR_SANDBOX_MARGIN_ACCOUNT_NUMBER
@@ -195,7 +202,7 @@ Use the README for other supported settings. Do not commit `.env`.
 
 ```bash
 chmod 600 .env
-sudo install -d -m 700 -o "$(id -un)" -g "$(id -gn)" /var/lib/ops-paper-trade
+sudo install -d -m 700 -o "$(id -un)" -g "$(id -gn)" /var/lib/ops-trade-idea
 ```
 
 The shared broker currently hardcodes the Webull sandbox endpoint. The dedicated
@@ -231,20 +238,20 @@ uv run python - <<'PY'
 import sqlite3
 from pathlib import Path
 source = Path('bot.sqlite3').resolve()
-target = Path('/tmp/ops-paper-trade-migration.sqlite3')
+target = Path('/tmp/ops-trade-idea-migration.sqlite3')
 if target.exists():
     raise SystemExit('Choose a new backup path; destination already exists')
 with sqlite3.connect(source.as_uri() + '?mode=ro', uri=True) as src:
     with sqlite3.connect(target) as dst:
         src.backup(dst)
 PY
-scp -i ~/Downloads/ssh-key.key /tmp/ops-paper-trade-migration.sqlite3 opc@YOUR_PUBLIC_IP:~/migration.sqlite3
+scp -i ~/Downloads/ssh-key.key /tmp/ops-trade-idea-migration.sqlite3 opc@YOUR_PUBLIC_IP:~/migration.sqlite3
 ```
 
 On the **VM**, before starting services:
 
 ```bash
-test ! -e /var/lib/ops-paper-trade/bot.sqlite3 && install -m 600 ~/migration.sqlite3 /var/lib/ops-paper-trade/bot.sqlite3
+test ! -e /var/lib/ops-trade-idea/bot.sqlite3 && install -m 600 ~/migration.sqlite3 /var/lib/ops-trade-idea/bot.sqlite3
 ```
 
 If the destination exists, inspect and back it up before deciding whether to
@@ -255,7 +262,7 @@ replace it. Do not merge or overwrite trading ledgers blindly.
 On the VM:
 
 ```bash
-cd ~/ops-paper-trade
+cd ~/ops-trade-idea
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --lifespan off
 ```
 
@@ -279,22 +286,22 @@ Stop the manual VM server with Ctrl+C before starting its managed replacement.
 ## 8. Configure automatic startup with systemd
 
 Use one FastAPI worker and no development reload. The templates below use Oracle Linux’s default user `opc` and assume the clone
-is at `/home/opc/ops-paper-trade`.
+is at `/home/opc/ops-trade-idea`.
 
-Create `/etc/systemd/system/ops-paper-trade.service`:
+Create `/etc/systemd/system/ops-trade-idea.service`:
 
 ```ini
 [Unit]
-Description=Ops Paper Trade API
+Description=Ops Trade Idea API
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
 User=opc
-WorkingDirectory=/home/opc/ops-paper-trade
+WorkingDirectory=/home/opc/ops-trade-idea
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/opc/ops-paper-trade/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+ExecStart=/home/opc/ops-trade-idea/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
 Restart=on-failure
 RestartSec=15
 UMask=0077
@@ -308,26 +315,26 @@ The app reads `.env` from its working directory.
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now ops-paper-trade
-sudo systemctl status ops-paper-trade
-sudo journalctl -u ops-paper-trade -n 100 --no-pager
+sudo systemctl enable --now ops-trade-idea
+sudo systemctl status ops-trade-idea
+sudo journalctl -u ops-trade-idea -n 100 --no-pager
 ```
 
 For the optional bullish runner, create
-`/etc/systemd/system/ops-paper-trade-bullish.service`:
+`/etc/systemd/system/ops-trade-idea-bullish.service`:
 
 ```ini
 [Unit]
-Description=Ops Paper Trade bullish scans
+Description=Ops Trade Idea bullish scans
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
 User=opc
-WorkingDirectory=/home/opc/ops-paper-trade
+WorkingDirectory=/home/opc/ops-trade-idea
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/opc/ops-paper-trade/.venv/bin/python app/main-top-bullish.py
+ExecStart=/home/opc/ops-trade-idea/.venv/bin/python app/main-top-bullish.py
 Restart=on-failure
 RestartSec=15
 UMask=0077
@@ -371,8 +378,8 @@ To activate the bullish service after these checks:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now ops-paper-trade-bullish
-sudo journalctl -u ops-paper-trade-bullish -f
+sudo systemctl enable --now ops-trade-idea-bullish
+sudo journalctl -u ops-trade-idea-bullish -f
 ```
 
 Keep `NEXT_DAY_EXIT_ENABLED=false` until its broker behavior is validated. The
@@ -395,10 +402,11 @@ complete cross-strategy duplicate/position guard.
 Useful commands:
 
 ```bash
-sudo systemctl status ops-paper-trade ops-paper-trade-bullish
-sudo journalctl -u ops-paper-trade-bullish -n 100 --no-pager
-df -h /var/lib/ops-paper-trade
-sudo systemctl stop ops-paper-trade-bullish
+sudo systemctl status ops-trade-idea ops-trade-idea-bullish
+sudo journalctl -u ops-trade-idea-bullish -n 100 --no-pager
+df -h /var/lib/ops-trade-idea
+sudo systemctl stop ops-trade-idea-bullish
+sudo systemctl start ops-trade-idea-bullish
 ```
 
 ## 11. Understand free-tier interruptions
@@ -412,3 +420,9 @@ orders already submitted are not automatically cancelled by a server outage.
 `systemd` handles process failures and boots, not recovery of reclaimed compute.
 Maintain backups and an external availability check. Do not assume uninterrupted
 execution just because the resource is called Always Free.
+
+## Last 3 days log and create file
+
+```
+sudo journalctl -u ops-trade-idea --since "3 days ago" --no-pager > ops-trade-idea-last-3-days.log
+```

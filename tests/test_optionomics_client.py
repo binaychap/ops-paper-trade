@@ -2,7 +2,7 @@ import io
 import json
 from urllib.error import HTTPError
 
-from app import optionomics_client as client
+from app.feeds import optionomics_client as client
 
 
 def test_caller_url_and_original_payload(monkeypatch):

@@ -1,21 +1,7 @@
-"""Daily 10 AM ET market sell of bot-tracked stock holdings. No broker calls on import.
+"""Daily market sells of all long equities in BULLISH_STOCK_ACCOUNT_NUMBER.
 
-Each trading day at the configured New York time the scheduler:
-  1. queries the SQLite ledger for tracked stock holdings
-     (`scheduled_stock_exits` rows that are not complete, plus
-     `top_bullish_trades` rows with status 'submitted'), and
-  2. sells each holding at market through the Webull sell API
-     (`StockExecution.market_sell`, SELL / MARKET / DAY / CORE).
-
-Safety rules, mirroring the scheduled-exit worker:
-  - one pass per trading day; per-symbol intent is reserved in the `events`
-    table (`morning-sell:<date>:<account>:<symbol>`) before any broker call,
-    so restarts never double-sell;
-  - only the broker-confirmed position is sold, capped at the tracked
-    quantity; untracked or zero positions are skipped, never assumed;
-  - sold rows are marked complete/sold so the next-day exit worker does not
-    sell them again;
-  - DRY_RUN suppresses every broker call.
+Uses broker positions, including stocks absent from the ledger. Reservations
+prevent same-day replay; submission acceptance is not confirmation of a fill.
 """
 from __future__ import annotations
 
@@ -84,12 +70,12 @@ class MorningSellCalendar:
 class MorningSellScheduler:
     """Runs one market-sell pass per trading day at the calendar's sell time."""
 
-    def __init__(self, ledger, broker, calendar=None, resolve_account=None, dry_run=True):
+    def __init__(self, ledger, broker, calendar=None, resolve_account=None, dry_run=True, mark_bullish_rows=False):
         self.ledger = ledger
         self.broker = broker
         self.calendar = calendar or MorningSellCalendar()
-        # resolve_account() supplies the broker account id for holdings whose
-        # ledger row carries none (bullish-runner trades).
+        # Resolve exactly BULLISH_STOCK_ACCOUNT_NUMBER, never a ledger account.
+        self.mark_bullish_rows = mark_bullish_rows
         self.resolve_account = resolve_account
         self.dry_run = dry_run
         self._last_run_date = None
@@ -120,18 +106,20 @@ class MorningSellScheduler:
     def _sell_all(self, today):
         run_date = today.isoformat()
         sold, skipped, errors = [], [], []
-        for holding in self.ledger.morning_sell_holdings():
-            symbol = holding['symbol']
-            account_id = holding['account_id']
-            if account_id is None:
-                if self.resolve_account is None:
-                    errors.append({'symbol': symbol, 'error': 'no account resolver configured'})
-                    continue
-                try:
-                    account_id = self.resolve_account()
-                except Exception as exc:
-                    errors.append({'symbol': symbol, 'error': f'account resolution failed: {exc}'})
-                    continue
+        if self.resolve_account is None:
+            raise ValueError('Morning sell requires the configured stock account')
+        account_id = self.resolve_account()
+        positions = self.broker.stock_positions(account_id)
+        sources = self.ledger.morning_sell_holdings()
+        for symbol, shares in positions.items():
+            holding = {
+                'symbol': symbol, 'source': 'broker_positions',
+                'tracked_quantity': str(shares),
+                'sources': [row for row in sources if row['symbol'] == symbol and (
+                    row['account_id'] == account_id or
+                    (row['source'] == 'top_bullish_trades' and self.mark_bullish_rows)
+                )],
+            }
             fingerprint = f'morning-sell:{run_date}:{account_id}:{symbol}'
             intent = {
                 'run_date': run_date, 'account_id': account_id, 'symbol': symbol,
@@ -167,18 +155,10 @@ class MorningSellScheduler:
     def _sell_holding(self, account_id, symbol, holding, fingerprint, intent):
         held = self.broker.position(account_id, symbol)
         held = self._decimal(held)
-        tracked = self._decimal(holding['tracked_quantity'])
         if held <= 0:
             self.ledger.finish(fingerprint, 'skipped', {**intent, 'reason': 'no_broker_position'})
             return {'symbol': symbol, 'sold': False, 'reason': 'no position held at broker'}
-        shares = min(tracked, held)
-        if shares <= 0:
-            self.ledger.finish(fingerprint, 'skipped',
-                               {**intent, 'reason': 'no_tracked_quantity', 'held': str(held)})
-            logger.warning('Morning sell %s skipped: broker holds %s but no tracked quantity; '
-                           'manual reconciliation required', symbol, held)
-            return {'symbol': symbol, 'sold': False,
-                    'reason': 'no tracked quantity; manual reconciliation required'}
+        shares = held
         if self.dry_run:
             self.ledger.finish(fingerprint, 'dry_run', {**intent, 'shares': str(shares)})
             return {'symbol': symbol, 'sold': False, 'reason': 'dry_run', 'shares': str(shares)}
@@ -188,8 +168,9 @@ class MorningSellScheduler:
         response = self.broker.market_sell(account_id, symbol, shares, order_id)
         self.ledger.finish(fingerprint, 'ordered',
                            {**intent, 'order_id': order_id, 'shares': str(shares), 'broker': response})
-        self._mark_source_sold(holding, run_date=intent['run_date'], order_id=order_id, shares=shares)
-        logger.info('Morning sell %s: sold %s shares at market (order %s)', symbol, shares, order_id)
+        for source in holding['sources']:
+            self._mark_source_sold(source, run_date=intent['run_date'], order_id=order_id, shares=shares)
+        logger.info('Morning sell %s: submitted market sell for %s shares (order %s)', symbol, shares, order_id)
         return {'symbol': symbol, 'sold': True, 'shares': str(shares), 'order_id': order_id}
 
     def _mark_source_sold(self, holding, *, run_date, order_id, shares):

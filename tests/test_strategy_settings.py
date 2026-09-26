@@ -6,8 +6,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.main import Settings
-from app.strategy_settings import StrategyExitSettings, exit_percentages
-from app.webull_submitter import submit_paper_order
+from app.config.strategy import StrategyExitSettings, exit_percentages
+from app.execution.submitter import submit_paper_order
 
 
 def test_percentages_load_from_dotenv(tmp_path, monkeypatch):
@@ -38,7 +38,7 @@ def test_invalid_percentages_rejected(name, value):
 def test_bullish_order_uses_configured_percentages(monkeypatch):
     captured = {}
     broker = SimpleNamespace(get_account_id=lambda **kw: 'test', buy_stock=lambda **kw: captured.update(kw) or {})
-    monkeypatch.setattr('app.webull_submitter._load_webull_stock_module', lambda: broker)
+    monkeypatch.setattr('app.execution.submitter._load_webull_stock_module', lambda: broker)
     settings = Settings(_env_file=None, DRY_RUN=False, BULLISH_STOCK_ACCOUNT_NUMBER="test-cash", NEXT_DAY_EXIT_ENABLED=False,
                         BULLISH_PROFIT_PERCENT=12, BULLISH_STOP_LOSS_PERCENT=6)
     payload = SimpleNamespace(direction='bullish', entry_price=100, target_price=120, stop_price=90)
@@ -50,8 +50,8 @@ def test_bullish_order_uses_configured_percentages(monkeypatch):
 def test_bearish_executor_receives_configured_percentages(monkeypatch):
     captured = {}
     broker = SimpleNamespace(get_account_id=lambda **kw: 'test')
-    monkeypatch.setattr('app.webull_submitter._load_webull_option_module', lambda: broker)
-    monkeypatch.setattr('app.bearish_option_executor.BearishPutOptionExecutor.submit',
+    monkeypatch.setattr('app.execution.submitter._load_webull_option_module', lambda: broker)
+    monkeypatch.setattr('app.bearish.executor.BearishPutOptionExecutor.submit',
                         lambda self, **kw: captured.update(kw) or {})
     settings = Settings(_env_file=None, DRY_RUN=False, BEARISH_PROFIT_PERCENT=25, BEARISH_STOP_LOSS_PERCENT=12, OPTIONS_MARGIN_ACCOUNT_NUMBER="test-margin", BEARISH_QUOTE_MAX_AGE_SECONDS=1200)
     payload = SimpleNamespace(direction='bearish', entry_price=100, target_price=90, stop_price=110)
@@ -62,13 +62,14 @@ def test_bearish_executor_receives_configured_percentages(monkeypatch):
 
 
 def test_bullish_runner_uses_configured_percentages(tmp_path):
-    path = Path(__file__).resolve().parents[1] / 'app/main-top-bullish.py'
+    path = Path(__file__).resolve().parents[1] / 'app/bullish/runner.py'
     spec = importlib.util.spec_from_file_location('bullish_percentage_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     settings = module.BullishSettings(_env_file=None, DRY_RUN=True, DATABASE_PATH=str(tmp_path / 'test.db'),
                                      BULLISH_PROFIT_PERCENT=12, BULLISH_STOP_LOSS_PERCENT=6)
-    runner = module.MainTopBullish(settings=settings, quote_provider=lambda s: {'price': 100})
+    runner = module.MainTopBullish(settings=settings, quote_provider=lambda s: {'price': 100},
+                                   market_open=lambda: True)
     result = runner.process(dict(symbol='AAPL', total_premium=1000, trade_count=3))
     assert result['order']['target_price'] == 112
     assert result['order']['stop_price'] == 94

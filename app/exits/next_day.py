@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from uuid import uuid4
 
 import exchange_calendars as calendars
-from app.stock_execution import OrderNotFound
+from app.broker.stocks import OrderNotFound
 
 logger = logging.getLogger('optionomics_bot')
 

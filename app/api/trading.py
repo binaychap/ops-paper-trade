@@ -18,7 +18,6 @@ Stocks only; no option order support.
 from __future__ import annotations
 
 import hmac
-import importlib.util
 import json
 import logging
 import math
@@ -33,10 +32,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 
-from app.ledger import Ledger
-from app.strategy_settings import bullish_stock_account_id, exit_percentages
-from app.webull_broker import get_trade_client
-from app.webull_quotes import QuoteError, current_stock_quote
+from app.persistence.ledger import Ledger
+from app.config.strategy import bullish_stock_account_id, exit_percentages
+from app.broker.client import get_trade_client
+from app.broker.quotes import QuoteError, current_stock_quote
 
 logger = logging.getLogger("optionomics_bot")
 
@@ -150,13 +149,8 @@ def _market_open() -> bool:
 
 
 def _load_stock_module() -> Any:
-    module_path = Path(__file__).resolve().parent / "webull-buy-combo-stock.py"
-    spec = importlib.util.spec_from_file_location("webull_combo_stock_ios", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load Webull stock combo module from {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from importlib import import_module
+    return import_module('app.bullish.stock_bracket')
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +521,7 @@ def _submit_stock_order(preview: dict[str, Any], client_order_id: str, settings:
         }
 
     # SELL: single-leg NORMAL order, same leg shape the scheduled-exit
-    # market sells use in app/stock_execution.py.
+    # market sells use in app/broker/stocks.py.
     leg: dict[str, Any] = {
         "client_order_id": client_order_id,
         "combo_type": "NORMAL",

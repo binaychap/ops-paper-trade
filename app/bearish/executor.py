@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
 from typing import Any
 
 
@@ -13,14 +11,8 @@ class BearishPutOptionExecutor:
 
     @staticmethod
     def _load_option_module() -> Any:
-        module_path = Path(__file__).resolve().parent / "webull-buy-combo-option.py"
-        spec = importlib.util.spec_from_file_location("webull_combo_option_executor", module_path)
-        if spec is None or spec.loader is None:
-            raise RuntimeError(f"Unable to load Webull option module from {module_path}")
-
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+        from importlib import import_module
+        return import_module('app.options.brackets')
 
     @staticmethod
     def option_type() -> str:

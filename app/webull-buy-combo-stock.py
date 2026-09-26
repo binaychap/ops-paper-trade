@@ -1,92 +1,14 @@
-"""Stock bracket combo orders."""
+"""Compatibility entry point; implementation lives in app.bullish.stock_bracket."""
+import sys
+from pathlib import Path
 
-import json
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.webull_broker import get_account_id as get_account_id
-from app.webull_broker import get_trade_client, new_id
-
-
-def buy_stock(
-    account_id: str,
-    symbol: str,
-    quantity: int,
-    entry_price: float | None,
-    stop_price: float,
-    target_price: float,
-    trade_client=None,
-    *,
-    exit_time_in_force="DAY",
-    before_submit=None,
-):
-    if exit_time_in_force not in {"DAY", "GTC"}:
-        raise ValueError("Invalid stock exit time in force")
-    trade_client = trade_client or get_trade_client()
-    symbol = symbol.upper()
-    combo_id = new_id()
-
-    # If `entry_price` is None then submit a market entry order, otherwise use a limit.
-    master_order = {
-        "client_order_id": new_id(),
-        "combo_type": "MASTER",
-        "symbol": symbol,
-        "instrument_type": "EQUITY",
-        "market": "US",
-        "side": "BUY",
-        "order_type": "MARKET" if entry_price is None else "LIMIT",
-        "quantity": str(quantity),
-        "time_in_force": "DAY",
-        "support_trading_session": "CORE",
-        "entrust_type": "QTY",
-    }
-    if entry_price is not None:
-        master_order["limit_price"] = f"{float(entry_price):.2f}"
-
-    take_profit_order = {
-        "client_order_id": new_id(),
-        "combo_type": "STOP_PROFIT",
-        "symbol": symbol,
-        "instrument_type": "EQUITY",
-        "market": "US",
-        "side": "SELL",
-        "order_type": "LIMIT",
-        "limit_price": f"{float(target_price):.2f}",
-        "quantity": str(quantity),
-        "time_in_force": exit_time_in_force,
-        "support_trading_session": "CORE",
-        "entrust_type": "QTY",
-    }
-
-    stop_loss_order = {
-        "client_order_id": new_id(),
-        "combo_type": "STOP_LOSS",
-        "symbol": symbol,
-        "instrument_type": "EQUITY",
-        "market": "US",
-        "side": "SELL",
-        "order_type": "STOP_LOSS",
-        "stop_price": f"{float(stop_price):.2f}",
-        "quantity": str(quantity),
-        "time_in_force": exit_time_in_force,
-        "support_trading_session": "CORE",
-        "entrust_type": "QTY",
-    }
-
-    new_orders = [master_order, take_profit_order, stop_loss_order]
-    tracking = {
-        "combo_id": combo_id,
-        "entry_id": master_order["client_order_id"],
-        "profit_id": take_profit_order["client_order_id"],
-        "stop_id": stop_loss_order["client_order_id"],
-    }
-    if before_submit is not None:
-        before_submit(tracking)
-    response = trade_client.order_v3.place_order(account_id, new_orders, client_combo_order_id=combo_id)
-    if response.status_code != 200:
-        raise RuntimeError(f"Stock order failed: {response.status_code} {response.text}")
-
-    result = response.json()
-    print("\nStock bracket combo submitted successfully:")
-    print(json.dumps({"client_combo_order_id": combo_id, "new_orders": new_orders}, indent=2))
-    print(json.dumps(result, indent=2))
-    return {**result, **tracking}
-
+if __name__ == '__main__':
+    import runpy
+    runpy.run_module('app.bullish.stock_bracket', run_name='__main__')
+else:
+    from importlib import import_module
+    _module = import_module('app.bullish.stock_bracket')
+    globals().update({k: v for k, v in vars(_module).items() if not k.startswith('__')})
