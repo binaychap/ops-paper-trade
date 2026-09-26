@@ -1,5 +1,21 @@
 # Ops Trade Idea — project memory
 
+## GCP free-tier Terraform deployment (2026-09-26)
+
+Terraform code lives in the separate repo `binaychap/ops-trade-idea-gcp`
+(moved out of this repo on 2026-09-26 to manage infra independently). It
+deploys the bot on GCP always-free tier (e2-micro, us-central1-a, firewall
+TCP 8000). First-boot script installs uv, clones this repo to
+`/opt/ops-paper-trade`, writes `.env` from Terraform variables, and enables
+a systemd service running `uv run uvicorn app.main:app --host 0.0.0.0
+--port 8000`. Secrets via gitignored `terraform.tfvars` or `TF_VAR_*` env
+vars, never committed. Remote state via HCP Terraform Cloud (organization
+`ops-trade-idea`, workspace `ops-trade-idea-gcp`); set `project_id`, secrets
+and `GOOGLE_CREDENTIALS` as sensitive workspace variables after `terraform
+login`, or switch the workspace to Local execution mode to keep secrets in
+local `terraform.tfvars`. Config validated; not yet applied to a real GCP
+project. Motivated by Oracle's idle-reclamation risk (GCP has none).
+
 ## Project name (2026-09-26)
 
 Project metadata and uv lock entry now use ops-trade-idea. README/dashboard
