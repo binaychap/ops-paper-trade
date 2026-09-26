@@ -16,6 +16,27 @@ Stays at $0/month as long as you keep the free-tier guardrails below.
    gcloud config set project YOUR_PROJECT_ID
    ```
 
+## Terraform Cloud
+
+The config uses HCP Terraform (organization `ops-trade-idea`, workspace
+`ops-trade-idea-gcp`) for remote state and runs. On your Mac:
+
+```bash
+terraform login   # once; opens a browser to approve the token
+```
+
+Then set variables in the workspace UI (**Variables** tab), marking secrets
+sensitive:
+
+- `project_id`, plus every `TF_VAR_*` secret from `terraform.tfvars.example`
+  (`optionomics_api_key`, `webull_app_key`, `webull_app_secret`, `ios_api_key`, …)
+- `GOOGLE_CREDENTIALS` — contents of a GCP service-account key JSON, so
+  remote runs can authenticate to your project
+
+After that, `terraform plan` / `terraform apply` run remotely from the
+workspace. To go back to local state, remove the `cloud {}` block from
+`main.tf` and re-run `terraform init`.
+
 ## Deploy
 
 ```bash

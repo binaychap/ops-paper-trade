@@ -6,6 +6,13 @@ terraform {
       version = "~> 6.0"
     }
   }
+
+  cloud {
+    organization = "ops-trade-idea"
+    workspaces {
+      name = "ops-trade-idea-gcp"
+    }
+  }
 }
 
 provider "google" {
