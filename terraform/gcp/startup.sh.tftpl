@@ -1,0 +1,90 @@
+#!/bin/bash
+# Terraform template: $${...} is interpolated by Terraform at render time.
+# The .env heredoc is quoted ('ENVEOF') so the shell does not expand anything.
+set -eux
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y git curl
+
+# Install uv (Python package manager the bot uses)
+if [ ! -x /root/.local/bin/uv ]; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
+export PATH="/root/.local/bin:$PATH"
+
+# Clone the bot repo
+mkdir -p /opt
+cd /opt
+if [ ! -d ops-paper-trade/.git ]; then
+  rm -rf ops-paper-trade
+  git clone ${repo_url} ops-paper-trade
+fi
+cd ops-paper-trade
+
+# Write the bot's .env from Terraform variables (never committed to git)
+cat > .env <<'ENVEOF'
+DRY_RUN=${dry_run}
+MAX_NOTIONAL_USD=${max_notional_usd}
+ALLOW_SHORT_SELLING=${allow_short_selling}
+FORCE_REPROCESS=${force_reprocess}
+
+OPTIONOMICS_API_KEY=${optionomics_api_key}
+OPTIONOMICS_EMAIL=${optionomics_email}
+OPTIONOMICS_API_URL=${optionomics_api_url}
+OPTIONOMICS_POLL_ENABLED=${optionomics_poll_enabled}
+OPTIONOMICS_POLL_INTERVAL_SECONDS=${optionomics_poll_interval_seconds}
+
+WEBULL_APP_KEY=${webull_app_key}
+WEBULL_APP_SECRET=${webull_app_secret}
+WEBULL_ENDPOINT=${webull_endpoint}
+
+DATABASE_PATH=${database_path}
+
+BULLISH_PROFIT_PERCENT=${bullish_profit_percent}
+BULLISH_STOP_LOSS_PERCENT=${bullish_stop_loss_percent}
+BEARISH_PROFIT_PERCENT=${bearish_profit_percent}
+BEARISH_STOP_LOSS_PERCENT=${bearish_stop_loss_percent}
+IRON_CONDOR_PROFIT_PERCENT=${iron_condor_profit_percent}
+IRON_CONDOR_STOP_LOSS_PERCENT=${iron_condor_stop_loss_percent}
+
+OPTIONS_MARGIN_ACCOUNT_NUMBER=${options_margin_account_number}
+BULLISH_STOCK_ACCOUNT_NUMBER=${bullish_stock_account_number}
+
+BEARISH_QUOTE_MAX_AGE_SECONDS=${bearish_quote_max_age_seconds}
+IRON_CONDOR_QUOTE_MAX_AGE_SECONDS=${iron_condor_quote_max_age_seconds}
+
+IOS_API_KEY=${ios_api_key}
+
+MORNING_SELL_ENABLED=${morning_sell_enabled}
+MORNING_SELL_TIME=${morning_sell_time}
+MORNING_SELL_TIMEZONE=${morning_sell_timezone}
+MORNING_SELL_POLL_SECONDS=${morning_sell_poll_seconds}
+ENVEOF
+chmod 600 .env
+
+# Install Python dependencies
+uv sync
+
+# systemd service: starts on boot, restarts on failure
+cat > /etc/systemd/system/ops-paper-trade.service <<'SVCEOF'
+[Unit]
+Description=OpsPaperTrade paper-trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ops-paper-trade
+Environment=PYTHONPATH=.
+ExecStart=/root/.local/bin/uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+systemctl daemon-reload
+systemctl enable --now ops-paper-trade.service

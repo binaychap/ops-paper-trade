@@ -9,3 +9,10 @@ logs/
 .env.example
 
 *.sqlite3.exits.lock
+
+# Terraform (GCP deployment)
+terraform/gcp/.terraform/
+terraform/gcp/*.tfstate
+terraform/gcp/*.tfstate.backup
+terraform/gcp/terraform.tfvars
+terraform/gcp/crash.log

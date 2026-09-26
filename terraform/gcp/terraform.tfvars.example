@@ -1,0 +1,23 @@
+# Copy to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored — never commit real secrets.
+# Alternatively pass secrets as TF_VAR_<name> environment variables,
+# e.g. TF_VAR_ios_api_key="..." terraform apply
+
+project_id = "your-gcp-project-id"
+
+# --- Secrets (leave empty to disable the corresponding feature) ---
+optionomics_api_key = ""
+optionomics_email   = ""
+webull_app_key      = ""
+webull_app_secret   = ""
+ios_api_key         = ""
+
+# --- Account numbers (only needed when enabling live/paper submissions) ---
+options_margin_account_number = ""
+bullish_stock_account_number  = ""
+
+# --- Non-secret overrides (defaults mirror .env.example) ---
+# dry_run                        = "true"
+# morning_sell_enabled           = "false"
+# optionomics_poll_enabled       = "true"
+# optionomics_poll_interval_seconds = "600"
